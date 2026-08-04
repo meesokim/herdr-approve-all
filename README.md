@@ -19,7 +19,7 @@ herdr plugin install RenKoya1/herdr-approve-all
 Invoke the action from the CLI:
 
 ```sh
-herdr plugin action invoke renkoya.approve-all.approve-blocked
+herdr plugin action invoke renkoya1.approve-all.approve-blocked
 ```
 
 Or bind it to a key in `~/.config/herdr/config.toml`:
@@ -28,7 +28,7 @@ Or bind it to a key in `~/.config/herdr/config.toml`:
 [[keys.command]]
 key = "ctrl+enter"
 type = "plugin_action"
-command = "renkoya.approve-all.approve-blocked"
+command = "renkoya1.approve-all.approve-blocked"
 ```
 
 > `ctrl+enter` only reaches herdr if your terminal distinguishes it from plain
