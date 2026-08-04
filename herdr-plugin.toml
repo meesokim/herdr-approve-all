@@ -1,6 +1,6 @@
 id = "renkoya1.approve-all"
 name = "Approve All"
-version = "0.1.1"
+version = "0.2.0"
 min_herdr_version = "0.7.4"
 description = "Approve every blocked agent at once: sends Enter to all blocked panes, accepting the highlighted default (Yes) on each pending permission prompt."
 platforms = ["linux", "macos"]
@@ -10,3 +10,19 @@ id = "approve-blocked"
 title = "Approve all blocked agents"
 contexts = ["workspace"]
 command = ["bash", "scripts/approve-blocked.sh"]
+
+[[actions]]
+id = "auto-on"
+title = "Auto-approve: turn ON"
+contexts = ["workspace"]
+command = ["bash", "scripts/auto-toggle.sh", "on"]
+
+[[actions]]
+id = "auto-off"
+title = "Auto-approve: turn OFF"
+contexts = ["workspace"]
+command = ["bash", "scripts/auto-toggle.sh", "off"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "scripts/on-status-changed.sh"]

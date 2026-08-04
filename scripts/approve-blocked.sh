@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Send Enter to every blocked agent pane, accepting the highlighted default
-# option (Yes) on each pending prompt.
+# Approve every blocked agent pane (any agent: claude, codex, gemini, ...) by
+# sending its confirm key, accepting the highlighted default (Yes) prompt.
 set -euo pipefail
-
-HERDR="${HERDR_BIN_PATH:-herdr}"
+. "$(dirname "$0")/lib.sh"
 
 # Debounce: key auto-repeat can fire this action dozens of times per second,
 # tripping herdr's concurrent plugin command cap (32). First instance wins;
@@ -21,22 +20,23 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
-# jq when available (instant); python3 fallback (interpreter startup can cost ~1s)
-list_blocked() {
-  if command -v jq >/dev/null 2>&1; then
-    "$HERDR" agent list | jq -r '.result.agents[] | select(.agent_status == "blocked") | .pane_id'
-  else
-    "$HERDR" agent list | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-for a in d.get('result', {}).get('agents', []):
-    if a.get('agent_status') == 'blocked':
-        print(a['pane_id'])
-"
-  fi
-}
-
-for pane in $(list_blocked); do
-  "$HERDR" agent send-keys "$pane" enter &
-done
+count=0
+while read -r pane agent; do
+  [ -n "$pane" ] || continue
+  # shellcheck disable=SC2046
+  "$HERDR" agent send-keys "$pane" $(keys_for "$agent") &
+  count=$((count + 1))
+done << EOF
+$("$HERDR" agent list | json_eval \
+  '.result.agents[] | select(.agent_status == "blocked") | "\(.pane_id) \(.agent // "unknown")"' \
+  'for a in d.get("result", {}).get("agents", []):
+    if a.get("agent_status") == "blocked":
+        print(a["pane_id"], a.get("agent", "unknown"))')
+EOF
 wait
+
+if [ "$count" -gt 0 ]; then
+  s=""
+  [ "$count" -gt 1 ] && s="s"
+  "$HERDR" notification show "Approved $count agent$s" --sound none >/dev/null 2>&1 || true
+fi
