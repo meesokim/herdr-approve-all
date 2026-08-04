@@ -1,0 +1,12 @@
+id = "renkoya.approve-all"
+name = "Approve All"
+version = "0.1.0"
+min_herdr_version = "0.7.4"
+description = "Approve every blocked agent at once: sends Enter to all blocked panes, accepting the highlighted default (Yes) on each pending permission prompt."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "approve-blocked"
+title = "Approve all blocked agents"
+contexts = ["workspace"]
+command = ["bash", "scripts/approve-blocked.sh"]
