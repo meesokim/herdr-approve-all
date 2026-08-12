@@ -7,6 +7,10 @@ set -euo pipefail
 # Debounce: key auto-repeat can fire this action dozens of times per second,
 # tripping herdr's concurrent plugin command cap (32). First instance wins;
 # repeats while the lock is fresh exit immediately.
+# The lock dir is deliberately LEFT BEHIND on exit — its mtime is the timestamp
+# the window is measured from. Removing it on exit made every completed run
+# release the lock instantly, so the window never applied to anything but a run
+# still in flight (~30ms) and bursts of 30/sec got through.
 LOCK="${TMPDIR:-/tmp}/herdr-approve-all.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   now=$(date +%s)
@@ -14,11 +18,10 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   if [ $((now - mt)) -lt 10 ]; then
     exit 0
   fi
-  # stale lock from a killed run: steal it
+  # window elapsed (or a killed run left it): take it over
   rmdir "$LOCK" 2>/dev/null || true
   mkdir "$LOCK" 2>/dev/null || exit 0
 fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
 count=0
 while read -r pane agent; do
