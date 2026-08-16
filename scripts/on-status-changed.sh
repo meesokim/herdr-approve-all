@@ -19,5 +19,10 @@ EOF
 [ "$status" = "blocked" ] || exit 0
 [ "$pane" != "?" ] || exit 0
 
-# shellcheck disable=SC2046
-"$HERDR" agent send-keys "$pane" $(keys_for "$agent")
+# The pane lock keeps this handler and a manual sweep from driving the same pane
+# at once. approve_pane drains the prompts queued behind this one: while a pane
+# stays blocked the status never changes, so this event does not fire again.
+lock=$(pane_lock_path "$pane")
+take_lock "$lock" 60 || exit 0
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT HUP INT TERM
+approve_pane "$pane" "$agent" >/dev/null

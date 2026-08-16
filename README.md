@@ -5,9 +5,10 @@ or automatically, the moment one blocks.
 
 When you run a fleet of coding agents (Claude Code, Codex, Gemini CLI, ...),
 permission prompts pile up and you end up pressing **Yes** pane by pane. This
-plugin sends the confirm key to every pane whose agent is in the `blocked`
-state, accepting the highlighted default option (usually **Yes**) in one
-keystroke — or with zero keystrokes in auto mode.
+plugin sends the confirm key to every waiting pane, accepting the highlighted
+default option (usually **Yes**) in one keystroke — or with zero keystrokes in
+auto mode — then checks each pane actually moved on and answers whatever queued
+up behind it.
 
 Works with any agent herdr detects; the confirm key defaults to `Enter`, which
 accepts the highlighted default in Claude Code, Codex, Gemini CLI, and the rest
@@ -42,8 +43,8 @@ Or invoke from the CLI:
 herdr plugin action invoke renkoya1.approve-all.approve-blocked
 ```
 
-A toast reports how many agents were approved. Key auto-repeat is debounced,
-so holding the key down doesn't flood the server.
+A toast reports how many agents were **verified** approved, plus how many are
+still blocked after the sweep gave up on them.
 
 ## Auto-approve mode
 
@@ -55,8 +56,9 @@ herdr plugin action invoke renkoya1.approve-all.auto-off
 ```
 
 The plugin subscribes to agent status changes; when a pane turns `blocked`, it
-sends the confirm key immediately. The toggle persists across restarts (it's a
-marker file in the plugin config dir).
+sends the confirm key immediately and then drains whatever queued up behind it.
+The toggle persists across restarts (it's a marker file in the plugin config
+dir).
 
 **This is the YOLO switch.** It approves *every* prompt in *every* pane,
 including "run this destructive command?". Turn it on only when you'd answer
@@ -74,13 +76,71 @@ codex=y enter
 
 Key names follow `herdr agent send-keys` (e.g. `enter`, `esc`, `y`).
 
+## Stacked prompts
+
+A pane rarely asks once. A fleet of subagents queues several permission prompts
+behind each other, and herdr reports `blocked` -> `blocked` across them: the
+status never changes, so no new event fires and a single confirm key clears only
+the first one.
+
+So the sweep does not fire and forget. Per pane it sends the confirm key, waits
+for the pane to leave `blocked`, then looks again — up to `APPROVE_MAX_SENDS`
+(5) prompts per run. Auto mode runs the same drain, which is what makes it
+survive a burst.
+
+## Which panes get swept
+
+Every agent pane is a candidate, not only the ones herdr reports as `blocked`.
+herdr derives that status by scraping the terminal, and a live prompt can lose
+to a higher-priority detection rule (a spinner in the OSC title, the composer's
+own idle rule) — leaving a pane that is visibly waiting reported as
+`working`/`idle` and, before this, silently skipped.
+
+The fallback therefore also matches the visible screen: an `esc to cancel`
+footer (only rendered while a dialog is live) plus a numbered/highlighted option
+line. Set `APPROVE_SCRAPE_FALLBACK=0` to trust herdr's status alone.
+
+## Hold the key to keep approving
+
+Auto-repeat is used rather than fought. **Hold the key down and the sweep stays
+alive**, re-checking the fleet every ~240ms, so prompts that appear while you
+are still holding get approved as they arrive. Let go and it stops.
+
+Mechanically: the first instance takes the lock and loops; every repeat that
+lands while it runs drops a marker and exits in ~10ms, so herdr's concurrent
+plugin command cap (32) is never approached. When the markers stop arriving,
+the grace window lapses and the sweeper exits (with a `HOLD_MAX` backstop for a
+wedged key).
+
+The only debounce left applies to a sweep that found **nothing**: a 1s window,
+so a held key over a quiet fleet doesn't re-list it as fast as bash can fork. A
+sweep that *did* approve something sets no window at all, so a deliberate
+re-press is always honoured immediately. (Before 0.3.0 a flat 10s window applied
+to every sweep, which silently ate exactly the presses that mattered: the ones
+aimed at the next prompt in a burst.)
+
+## Tuning
+
+Env vars, read by both the sweep and the auto handler:
+
+| Var | Default | Meaning |
+| --- | --- | --- |
+| `APPROVE_MAX_SENDS` | `5` | confirm keys per pane, per pass |
+| `APPROVE_LEAVE_TIMEOUT_MS` | `1200` | how long to wait for a pane to leave `blocked` |
+| `APPROVE_SETTLE_SEC` | `0.15` | pause before re-checking, so a queued prompt can paint |
+| `APPROVE_SCRAPE_FALLBACK` | `1` | also sweep panes whose live prompt herdr missed |
+| `APPROVE_IDLE_DEBOUNCE_SEC` | `1` | window after an empty sweep |
+| `APPROVE_HOLD_POLL_SEC` | `0.08` | hold-detection granularity |
+| `APPROVE_HOLD_POLLS` | `3` | grace windows before a hold is considered released |
+| `APPROVE_HOLD_MAX_SEC` | `60` | backstop: longest a single hold keeps sweeping |
+
 ## What it does (and doesn't)
 
-- Manual sweep targets panes blocked at the moment you invoke it; panes that
-  block right after need another press (or auto mode).
 - Sends the confirm key, i.e. accepts whatever option is highlighted. For
   permission prompts that is **Yes**; for other blocking dialogs (question
   cards, plan approvals, trust dialogs) it picks the default option.
+- A pane still blocked after `APPROVE_MAX_SENDS` is reported in the toast rather
+  than passed off as approved.
 
 **Caution**: this is indiscriminate by design. If a pending prompt is asking to
 run a destructive command, this approves it too. Glance at your panes before

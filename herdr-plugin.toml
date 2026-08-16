@@ -1,8 +1,8 @@
 id = "renkoya1.approve-all"
 name = "Approve All"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.7.4"
-description = "Approve every blocked agent at once: sends Enter to all blocked panes, accepting the highlighted default (Yes) on each pending permission prompt."
+description = "Approve every blocked agent at once: sends Enter to all waiting panes, accepting the highlighted default (Yes), then verifies each pane left the blocked state and drains the prompts queued behind it."
 platforms = ["linux", "macos"]
 
 [[actions]]
