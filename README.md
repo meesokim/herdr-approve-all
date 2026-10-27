@@ -1,5 +1,8 @@
 # herdr-approve-all
 
+This fork adds native Windows PowerShell support to
+[RenKoya1/herdr-approve-all](https://github.com/RenKoya1/herdr-approve-all).
+
 A [herdr](https://herdr.dev) plugin that approves every blocked agent at once —
 or automatically, the moment one blocks.
 
@@ -17,28 +20,74 @@ of herdr's supported agents.
 ## Install
 
 ```sh
-herdr plugin install RenKoya1/herdr-approve-all
+herdr plugin install meesokim/herdr-approve-all
 ```
 
-For a local checkout, link the checkout instead of installing from GitHub:
+The default `main` branch includes the Windows implementation. The plugin ID
+remains **`renkoya1.approve-all`** on every platform; installing from this fork
+does not change the action prefix to `meesokim`.
+
+## Windows quick start
+
+Use native Windows Herdr with Git and Windows PowerShell (`powershell.exe`)
+available on `PATH`. Bash, WSL, jq, and Python are not required on Windows.
+See [Herdr's Windows installation guide](https://herdr.dev/docs/windows-beta/)
+if Herdr is not installed yet. Windows behavior has been verified with Herdr
+`0.9.4-preview.2026-10-14`.
+
+Run the following in PowerShell to install, enable the plugin, and turn on
+automatic approval:
 
 ```powershell
-herdr plugin link C:\path\to\herdr-approve-all --enabled
-```
-
-Windows uses the action IDs `approve-blocked-windows`, `auto-on-windows` and
-`auto-off-windows` (all prefixed with `renkoya1.approve-all.`). For example:
-
-```powershell
-herdr plugin action invoke renkoya1.approve-all.approve-blocked-windows
+herdr plugin install meesokim/herdr-approve-all
+herdr plugin enable renkoya1.approve-all
 herdr plugin action invoke renkoya1.approve-all.auto-on-windows
+```
+
+Auto mode approves every pending prompt in every agent pane, including requests
+to run destructive commands. Enable it only when you intend to approve all of
+them. The ON toggle persists across Herdr restarts.
+
+To turn automatic approval off:
+
+```powershell
 herdr plugin action invoke renkoya1.approve-all.auto-off-windows
 ```
 
-Use `renkoya1.approve-all.approve-blocked-windows` in the keybinding below on
-Windows. Windows sweeps process panes sequentially; repeat the action for new
-prompts. Hold-to-repeat and idle debounce described below apply to Unix only.
-Existing auto-approve configuration is retained when switching plugin sources.
+For a single manual sweep:
+
+```powershell
+herdr plugin action invoke renkoya1.approve-all.approve-blocked-windows
+```
+
+Windows action IDs end in `-windows`; the unsuffixed actions below are for
+Linux/macOS. Windows sweeps process panes sequentially. Hold-to-repeat and idle
+debounce described below apply to Unix only.
+
+### Windows keybinding
+
+Add this binding to `%APPDATA%\herdr\config.toml` (PowerShell path:
+`$env:APPDATA\herdr\config.toml`):
+
+```toml
+[[keys.command]]
+key = "prefix+y"
+type = "plugin_action"
+command = "renkoya1.approve-all.approve-blocked-windows"
+```
+
+Then reload the configuration:
+
+```powershell
+herdr server reload-config
+```
+
+Press your configured Herdr prefix, then `y`, to run one sweep. Reloading config
+is only needed after editing the keybinding; automatic approval runs continuously
+once enabled. See [Herdr configuration](https://herdr.dev/docs/configuration/)
+for config-path overrides and prefix settings.
+
+### Windows auto-mode behavior and troubleshooting
 
 On Windows, enabling auto mode also starts one hidden PowerShell monitor. It
 rechecks the fleet every `APPROVE_AUTO_POLL_SEC` seconds (default `1`), so later
@@ -50,7 +99,30 @@ it has stopped. Enabling auto mode again starts it for an already-running Herdr.
 The worker's PID and latest result/error are written to `monitor.pid` and
 `monitor.log` under `HERDR_PLUGIN_STATE_DIR` (or `state` under the config dir).
 
-## Manual sweep
+If automatic approval does not continue, invoke `auto-on-windows` again to start
+the monitor, then inspect plugin status and logs:
+
+```powershell
+herdr plugin list
+herdr plugin action list --plugin renkoya1.approve-all
+herdr plugin log list --plugin renkoya1.approve-all --limit 10
+herdr agent list
+```
+
+Installing again uses the same plugin ID and config directory, so an existing
+auto-approve toggle may still be on. Run `auto-off-windows` before switching
+sources or disabling the plugin if the monitor is running.
+
+### Local development instead of GitHub installation
+
+```powershell
+git clone https://github.com/meesokim/herdr-approve-all.git
+herdr plugin link .\herdr-approve-all --enabled
+```
+
+Enable auto mode with the same `auto-on-windows` command after linking.
+
+## Manual sweep (Linux/macOS)
 
 Bind the sweep to a key in `~/.config/herdr/config.toml`:
 
@@ -76,7 +148,7 @@ herdr plugin action invoke renkoya1.approve-all.approve-blocked
 A toast reports how many agents were **verified** approved, plus how many are
 still blocked after the sweep gave up on them.
 
-## Auto-approve mode
+## Auto-approve mode (Linux/macOS)
 
 Approve every prompt the instant an agent blocks — no keypress at all:
 
