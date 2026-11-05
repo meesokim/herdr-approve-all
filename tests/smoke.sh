@@ -71,16 +71,16 @@ case "${1:-} ${2:-}" in
     ;;
   "agent send-keys")
     shift 3
-    printf '%s\n' "$*" >> "$MOCK_HERDR_DIR/sent"
     if [ -f "$MOCK_HERDR_DIR/queued" ]; then
       rm -f "$MOCK_HERDR_DIR/queued"
     else
       rm -f "$MOCK_HERDR_DIR/pending" "$MOCK_HERDR_DIR/fallback" "$MOCK_HERDR_DIR/fallback_screen.txt"
     fi
+    printf '%s\n' "$*" >> "$MOCK_HERDR_DIR/sent"
     ;;
   "agent prompt")
-    printf 'prompt:%s\n' "${4:-}" >> "$MOCK_HERDR_DIR/sent"
     rm -f "$MOCK_HERDR_DIR/fallback_screen.txt"
+    printf 'prompt:%s\n' "${4:-}" >> "$MOCK_HERDR_DIR/sent"
     ;;
 esac
 exit 0
@@ -134,13 +134,34 @@ bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "5" ] || { echo "sweep did not submit continue on network error screen" >&2; exit 1; }
 [ "$(tail -n 1 "$TMP/sent")" = "prompt:continue" ] || { echo "sweep did not send continue prompt" >&2; exit 1; }
 
-# Verify normal working screen with markdown list + quoted network error + composer box does NOT false-trigger.
+# Verify subagent approval banner ("ctrl+k approve · alt+j manage") sends ctrl+k.
+cat > "$TMP/fallback_screen.txt" << 'EOF'
+┃ self needs approval for Bash
+ ┃ ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ┃
+ ┃ ● Bash(git -C /home-mc/CORP/meeso.kim/GMBT-AX/MX_B2B_Orbit_Dev show --stat prototype/ai-discussion-20261105)
+ ┃
+ ┃ ctrl+k approve · alt+j manage
+────────────────────────────────────────────────────────────
+> 
+────────────────────────────────────────────────────────────
+? for shortcuts                               accept-edits
+EOF
+bash "$ROOT/scripts/approve-blocked.sh"
+[ "$(send_count)" = "6" ] || { echo "sweep did not send ctrl+k on subagent approval screen" >&2; exit 1; }
+[ "$(tail -n 1 "$TMP/sent")" = "ctrl+k" ] || { echo "sweep did not send ctrl+k key" >&2; exit 1; }
+
+# Verify normal working screen with markdown list + quoted network error + quoted ctrl+k banner + composer box does NOT false-trigger.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
   1. First normal markdown list item in scrollback
   2. Second normal markdown list item in scrollback
   > 1. Yes, allow access
   > ⚠ There was a network issue connecting to the server, please try again.
     Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
+  > ┃ self needs approval for Bash
+   ┃ ────────────────────────────────────────────────────────────
+   ┃ ● Bash(git status)
+   ┃ ctrl+k approve · alt+j manage
 
 Running command...
 
@@ -150,7 +171,7 @@ Running command...
 esc to cancel                               accept-edits
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "5" ] || { echo "sweep falsely triggered on normal working screen" >&2; exit 1; }
+[ "$(send_count)" = "6" ] || { echo "sweep falsely triggered on normal working screen" >&2; exit 1; }
 rm -f "$TMP/fallback_screen.txt"
 
 # Verify background monitor in auto mode handles blocked and working prompts without events.
@@ -160,11 +181,11 @@ wait_until '[ -f "$TMP/state/monitor.pid" ]' 'monitor did not start'
 WORKER_PID="$(cat "$TMP/state/monitor.pid")"
 
 : > "$TMP/pending"
-wait_until '[ "$(send_count)" -ge 6 ]' 'first automatic prompt was missed'
+wait_until '[ "$(send_count)" -ge 7 ]' 'first automatic prompt was missed'
 wait_until '[ ! -f "$TMP/pending" ]' 'first prompt did not settle'
 
 : > "$TMP/fallback"
-wait_until '[ "$(send_count)" -ge 7 ]' 'prompt reported as working was missed'
+wait_until '[ "$(send_count)" -ge 8 ]' 'prompt reported as working was missed'
 
 bash "$ROOT/scripts/auto-toggle.sh" off
 [ ! -f "$TMP/auto-approve" ] || { echo "off did not remove flag" >&2; exit 1; }

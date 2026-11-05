@@ -97,6 +97,50 @@ function Test-ContinueNeeded([string]$Screen) {
     $pattern = '(?is)(?:^|\r?\n)\s*(?!>)[^\r\n>]*?There was a network issue connecting to the server,\s*please try again\.\s*(?:\r?\n\s*Error ID:\s*[^\r\n]+)?\s*(?:$|\r?\n' + $rule + '{20,}\r?\n\s*>\s*\r?\n' + $rule + '{20,})'
     return ($Screen -match $pattern)
 }
+function Test-CtrlKNeeded([string]$Screen) {
+    if (-not $Screen) { return $false }
+    $rule = [string][char]0x2500
+    $hasHeader = $false
+    $inUser = $false
+    $matched = $false
+    $box = 0
+    foreach ($line in ($Screen -split "\r?\n")) {
+        if ($line -match ('^\s*' + $rule + '{20,}\s*$') -and $line -notmatch '^\s*[\u2503\u2502|]') {
+            if ($matched) {
+                if ($box -eq 0) { $box = 1; continue }
+                if ($box -eq 2) { $box = 3; continue }
+            }
+            $inUser = $false
+            continue
+        }
+        if ($line -match '^\s*>') {
+            if ($matched -and ($box -eq 1 -or $box -eq 2)) { $box = 2; continue }
+            $inUser = $true
+            $hasHeader = $false
+            $matched = $false
+            $box = 0
+            continue
+        }
+        if ($line -notmatch '^\s*[\u2503\u2502|]') {
+            $inUser = $false
+        }
+        if (-not $inUser -and $line -match '(?i)\bneeds approval(?:\s+for)?\b') {
+            $hasHeader = $true
+        }
+        if (-not $inUser -and $line -match '(?i)\bctrl\+k\s+(?:to\s+)?approve\b' -and ($hasHeader -or $line -match '(?i)\balt\+j\s+manage\b' -or $line -match '^\s*[\u2503\u2502|]')) {
+            $matched = $true
+            $box = 0
+            continue
+        }
+        if ($matched) {
+            if ($line -match '^\s*$' -or $line -match '^\s*[\u2503\u2502|\u2514\u251c\u25cf\u273b\u2800-\u28ff]') { continue }
+            if (($box -eq 0 -or $box -eq 3) -and $line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel|\S.*(?:accept-edits|request-review|auto-approve))') { continue }
+            $matched = $false
+            $box = 0
+        }
+    }
+    return ($matched -and ($box -eq 0 -or $box -eq 3))
+}
 function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
     try {
         $status = if ($KnownStatus) { $KnownStatus } else {
@@ -105,6 +149,7 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
         if ($status -eq 'blocked') { return 'approve' }
         if ($env:APPROVE_SCRAPE_FALLBACK -eq '0') { return '' }
         $screen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','28')
+        if (Test-CtrlKNeeded $screen) { return 'ctrl+k' }
         if (Test-PromptVisible $screen) { return 'approve' }
         if (Test-ContinueNeeded $screen) { return 'continue' }
         return ''
@@ -162,6 +207,16 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
                 Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.25)))
                 break
             }
+            if ($action -eq 'ctrl+k') {
+                try { $null = Invoke-Herdr @('agent','send-keys',$Pane,'ctrl+k') } catch { break }
+                $sent++
+                $lastAction = 'ctrl+k'
+                if ($hint -eq 'blocked') {
+                    try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','idle','--until','working','--until','done','--timeout',"$timeout") ([Math]::Max(2000, $timeout + 1500)) } catch { }
+                }
+                Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.25)))
+                continue
+            }
             try { $null = Invoke-Herdr (@('agent','send-keys',$Pane) + $keys) } catch { break }
             $sent++
             $lastAction = 'approve'
@@ -172,7 +227,8 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
         }
         if ($sent -eq 0) { return '-' }
         if ($lastAction -eq 'continue') { return '1' }
-        if ((Get-PaneAction $Pane) -eq 'approve') { return '0' }
+        $remaining = Get-PaneAction $Pane
+        if ($remaining -eq 'approve' -or $remaining -eq 'ctrl+k') { return '0' }
         return '1'
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
 }

@@ -16,7 +16,9 @@ and answers whatever queued up behind it.
 
 Works with any agent herdr detects; the confirm key defaults to `Enter`, which
 accepts the highlighted default in Claude Code, Codex, Gemini CLI, Antigravity
-(`agy`), and the rest of herdr's supported agents. When an agent stops on
+(`agy`), and the rest of herdr's supported agents. When a subagent approval
+banner is shown (`needs approval for ...` / `ctrl+k approve · alt+j manage`),
+the plugin sends `ctrl+k`. When an agent stops on
 `There was a network issue connecting to the server, please try again.`, the
 plugin automatically submits `continue` to resume the interrupted turn.
 

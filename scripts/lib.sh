@@ -175,7 +175,51 @@ screen_needs_continue() {
   '
 }
 
-# pane_action <pane> [known_status]: prints "approve", "continue", or nothing.
+# screen_needs_ctrl_k <screen_text>: true when an active subagent approval
+# banner (e.g. "┃ self needs approval for Bash" ... "┃ ctrl+k approve · alt+j manage")
+# is waiting on screen, ignoring user-quoted (> ...) text in scrollback.
+screen_needs_ctrl_k() {
+  [ -n "${1:-}" ] || return 1
+  printf '%s\n' "$1" | tr -d '\r' | awk '
+    BEGIN { rule = "────────────────────"; has_header = 0; in_user = 0; matched = 0; box = 0 }
+    index($0, rule) > 0 && $0 !~ /^[[:space:]]*(┃|│|\|)/ {
+      if (matched) {
+        if (box == 0) { box = 1; next }
+        if (box == 2) { box = 3; next }
+      }
+      in_user = 0
+      next
+    }
+    /^[[:space:]]*>/ {
+      if (matched && (box == 1 || box == 2)) { box = 2; next }
+      in_user = 1
+      has_header = 0
+      matched = 0
+      box = 0
+      next
+    }
+    $0 !~ /^[[:space:]]*(┃|│|\|)/ {
+      in_user = 0
+    }
+    !in_user && /[Nn]eeds approval( for )?/ {
+      has_header = 1
+    }
+    !in_user && /[Cc]trl\+k[[:space:]]+(to[[:space:]]+)?approve/ && (has_header || /[Aa]lt\+j[[:space:]]+manage/ || /^[[:space:]]*(┃|│|\|)/) {
+      matched = 1
+      box = 0
+      next
+    }
+    matched {
+      if (/^[[:space:]]*$/ || /^[[:space:]]*(┃|│|\||└|├|●|✻|⣟|⣯|⣷|⣾|⣽|⣻|⢿|⡿)/) next
+      if ((box == 0 || box == 3) && (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Ee]sc[[:space:]]+to[[:space:]]+cancel)/ || /(accept-edits|request-review|auto-approve)/)) next
+      matched = 0
+      box = 0
+    }
+    END { exit (matched && (box == 0 || box == 3) ? 0 : 1) }
+  '
+}
+
+# pane_action <pane> [known_status]: prints "approve", "ctrl+k", "continue", or nothing.
 # Reuses known_status when provided so blocked panes send keys immediately and
 # working/idle panes perform only a single "agent read" call.
 pane_action() {
@@ -189,6 +233,10 @@ pane_action() {
   fi
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
   out=$(run_herdr agent read "$pane" --source visible --lines 28 2>/dev/null) || return 1
+  if screen_needs_ctrl_k "$out"; then
+    printf 'ctrl+k'
+    return 0
+  fi
   if screen_has_prompt "$out"; then
     printf 'approve'
     return 0
@@ -207,6 +255,13 @@ prompt_visible() {
   screen_has_prompt "$out"
 }
 
+ctrl_k_needed() {
+  local out
+  [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
+  out=$(run_herdr agent read "$1" --source visible --lines 28 2>/dev/null) || return 1
+  screen_needs_ctrl_k "$out"
+}
+
 continue_needed() {
   local out
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
@@ -218,10 +273,11 @@ needs_approval() {
   pane_action "$1" "${2:-}" >/dev/null
 }
 
-# approve_pane <pane> <agent> [initial_status]: send the confirm key (or submit
-# "continue" on network errors), then VERIFY the pane left the blocked state.
+# approve_pane <pane> <agent> [initial_status]: send the confirm key (or ctrl+k
+# for subagent approvals, or "continue" on network errors), then VERIFY the pane
+# left the blocked state.
 approve_pane() {
-  local pane="$1" agent="$2" initial_status="${3:-}" sent=0 last_action="" hint action cstamp now mt
+  local pane="$1" agent="$2" initial_status="${3:-}" sent=0 last_action="" hint action cstamp now mt remaining
   while [ "$sent" -lt "$APPROVE_MAX_SENDS" ]; do
     if [ "$sent" -eq 0 ]; then
       hint="$initial_status"
@@ -249,6 +305,17 @@ approve_pane() {
       sleep "$APPROVE_SETTLE_SEC"
       break
     fi
+    if [ "$action" = "ctrl+k" ]; then
+      run_herdr agent send-keys "$pane" ctrl+k >/dev/null 2>&1 || break
+      sent=$((sent + 1))
+      last_action="ctrl+k"
+      if [ "$hint" = "blocked" ]; then
+        run_herdr agent wait "$pane" --until idle --until working --until done \
+          --timeout "$APPROVE_LEAVE_TIMEOUT_MS" >/dev/null 2>&1 || true
+      fi
+      sleep "$APPROVE_SETTLE_SEC"
+      continue
+    fi
     # shellcheck disable=SC2046
     run_herdr agent send-keys "$pane" $(keys_for "$agent") >/dev/null 2>&1 || break
     sent=$((sent + 1))
@@ -263,10 +330,13 @@ approve_pane() {
     printf -- '-'
   elif [ "$last_action" = "continue" ]; then
     printf 1
-  elif [ "$(pane_action "$pane" || true)" = "approve" ]; then
-    printf 0
   else
-    printf 1
+    remaining=$(pane_action "$pane" || true)
+    if [ "$remaining" = "approve" ] || [ "$remaining" = "ctrl+k" ]; then
+      printf 0
+    else
+      printf 1
+    fi
   fi
 }
 
