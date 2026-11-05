@@ -5,6 +5,7 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
 [ -f "${HERDR_PLUGIN_CONFIG_DIR:-/nonexistent}/auto-approve" ] || exit 0
+start_monitor
 
 EVENT="${HERDR_PLUGIN_EVENT_JSON:-}"
 [ -n "$EVENT" ] || exit 0
@@ -19,10 +20,10 @@ EOF
 [ "$status" = "blocked" ] || exit 0
 [ "$pane" != "?" ] || exit 0
 
-# The pane lock keeps this handler and a manual sweep from driving the same pane
-# at once. approve_pane drains the prompts queued behind this one: while a pane
-# stays blocked the status never changes, so this event does not fire again.
+# The pane lock keeps this handler, the background monitor, and a manual sweep
+# from driving the same pane at once. Passing "blocked" skips the redundant
+# agent_status() check before sending the first confirm key.
 lock=$(pane_lock_path "$pane")
-take_lock "$lock" 60 || exit 0
+take_lock "$lock" 15 || exit 0
 trap 'rmdir "$lock" 2>/dev/null || true' EXIT HUP INT TERM
-approve_pane "$pane" "$agent" >/dev/null
+approve_pane "$pane" "$agent" "blocked" >/dev/null

@@ -1,25 +1,54 @@
 param([Parameter(Mandatory=$true)][ValidateSet('sweep','on','off','event','startup','monitor')][string]$Mode)
 $ErrorActionPreference = 'Stop'
-$herdr = if ($env:HERDR_BIN_PATH) { $env:HERDR_BIN_PATH } else { 'herdr' }
+$herdr = if ($env:HERDR_BIN_PATH) { $env:HERDR_BIN_PATH } else {
+    $cmd = Get-Command 'herdr' -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) { $cmd.Source } else { 'herdr' }
+}
 $config = $env:HERDR_PLUGIN_CONFIG_DIR
 if (-not $config) { throw 'HERDR_PLUGIN_CONFIG_DIR is required' }
 $flag = Join-Path $config 'auto-approve'
 $state = if ($env:HERDR_PLUGIN_STATE_DIR) { $env:HERDR_PLUGIN_STATE_DIR } else { Join-Path $config 'state' }
 $automatic = $Mode -in @('event', 'monitor')
+$script:lastContinueAt = @{}
 
-function Invoke-Herdr([string[]]$Arguments) {
-    $output = & $herdr @Arguments 2>$null
-    if ($LASTEXITCODE -ne 0) { throw "herdr command failed: $($Arguments -join ' ')" }
-    return ($output -join "`n")
-}
-function Notify([string]$Message) {
-    try { $null = Invoke-Herdr @('notification','show',$Message,'--sound','none') } catch { }
-}
 function Number-Setting([string]$Name, [double]$Default) {
     $value = [Environment]::GetEnvironmentVariable($Name)
     $parsed = 0.0
     if ($value -and [double]::TryParse($value, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsed) -and $parsed -ge 0) { return $parsed }
     return $Default
+}
+function Invoke-Herdr([string[]]$Arguments, [int]$TimeoutMs = 0) {
+    if ($TimeoutMs -le 0) { $TimeoutMs = [int](Number-Setting 'APPROVE_CMD_TIMEOUT_MS' 4000) }
+    $argString = ($Arguments | ForEach-Object {
+        if ($_.Length -eq 0) { '""' }
+        elseif ($_ -notmatch '[\s"]') { $_ }
+        else { '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+    }) -join ' '
+    $psi = [Diagnostics.ProcessStartInfo]::new($herdr, $argString)
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $proc = [Diagnostics.Process]::Start($psi)
+    try {
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $null = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutMs)) {
+            try { $null = & taskkill.exe /F /T /PID $proc.Id 2>$null } catch { }
+            try { $proc.Kill() } catch { }
+            throw "herdr command timed out after ${TimeoutMs}ms: $($Arguments -join ' ')"
+        }
+        $null = $outTask.Wait(1000)
+        if ($proc.ExitCode -ne 0) { throw "herdr command failed: $($Arguments -join ' ')" }
+        $output = $outTask.GetAwaiter().GetResult()
+        return ($output -replace "`r`n", "`n").TrimEnd("`r", "`n")
+    } finally {
+        $proc.Dispose()
+    }
+}
+function Notify([string]$Message) {
+    try { $null = Invoke-Herdr @('notification','show',$Message,'--sound','none') } catch { }
 }
 function New-PluginMutex([string]$Name) {
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -43,17 +72,58 @@ function Start-Monitor {
     # It inherits HERDR_BIN_PATH and the socket/named-pipe invocation context.
     $null = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $workerArguments -WindowStyle Hidden
 }
-function Needs-Approval([string]$Pane) {
-    try {
-        $status = (Invoke-Herdr @('agent','get',$Pane) | ConvertFrom-Json).result.agent.agent_status
-        if ($status -eq 'blocked') { return $true }
-        if ($env:APPROVE_SCRAPE_FALLBACK -eq '0') { return $false }
-        $screen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','24')
-        $choicePattern = '(?im)^\s*(?:' + [char]0x276f + '\s*)?\d+\.\s|enter to (confirm|select)'
-        return ($screen -match '(?i)esc to cancel' -and $screen -match $choicePattern)
-    } catch { Write-Warning "Could not inspect pane ${Pane}: $_"; return $false }
+function Test-PromptVisible([string]$Screen) {
+    if (-not $Screen) { return $false }
+    $rule = [string][char]0x2500
+    $cursor = [string][char]0x276f
+    # Strip conversation history above an active composer box so markdown lists
+    # or user-pasted prompt text in scrollback never false-trigger while working.
+    $composerPattern = '(?s)^.*' + $rule + '{20,}\r?\n(?:\s*>[^\r\n]*\r?\n)+' + $rule + '{20,}\r?\n'
+    $active = $Screen -replace $composerPattern, ''
+    $selectedYesPattern = '(?im)^\s*[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow)\b'
+    $secondOptionPattern = '(?im)^\s*2\.\s+(?:Yes|No|Allow|Deny)\b'
+    $dialogCuePattern = '(?i)esc to cancel|Navigate|enter to (?:confirm|select)|Requesting permission for:|Run this command\?|Allow (?:sandbox bypass|access)\b|Reason:\s*outside workspace|Do you want to'
+    if ($active -match $selectedYesPattern -and ($active -match $secondOptionPattern -or $active -match $dialogCuePattern)) {
+        return $true
+    }
+    $classicChoicePattern = '(?im)^\s*(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow)\b)|enter to (?:confirm|select)'
+    return ($active -match '(?i)esc to cancel' -and $active -match $classicChoicePattern)
 }
-function Approve-Pane([string]$Pane, [string]$Agent) {
+function Test-ContinueNeeded([string]$Screen) {
+    if (-not $Screen) { return $false }
+    $rule = [string][char]0x2500
+    # Match transient network errors at the bottom of the transcript right above
+    # an empty composer box (or end of screen), ignoring user-quoted (> ...) lines.
+    $pattern = '(?is)(?:^|\r?\n)\s*(?!>)[^\r\n>]*?There was a network issue connecting to the server,\s*please try again\.\s*(?:\r?\n\s*Error ID:\s*[^\r\n]+)?\s*(?:$|\r?\n' + $rule + '{20,}\r?\n\s*>\s*\r?\n' + $rule + '{20,})'
+    return ($Screen -match $pattern)
+}
+function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
+    try {
+        $status = if ($KnownStatus) { $KnownStatus } else {
+            [string](Invoke-Herdr @('agent','get',$Pane) | ConvertFrom-Json).result.agent.agent_status
+        }
+        if ($status -eq 'blocked') { return 'approve' }
+        if ($env:APPROVE_SCRAPE_FALLBACK -eq '0') { return '' }
+        $screen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','28')
+        if (Test-PromptVisible $screen) { return 'approve' }
+        if (Test-ContinueNeeded $screen) { return 'continue' }
+        return ''
+    } catch { Write-Warning "Could not inspect pane ${Pane}: $_"; return '' }
+}
+function Needs-Approval([string]$Pane, [string]$KnownStatus = '') {
+    return ((Get-PaneAction $Pane $KnownStatus) -ne '')
+}
+function Get-SortedAgents {
+    $agents = @((Invoke-Herdr @('agent','list') | ConvertFrom-Json).result.agents)
+    return @($agents | Sort-Object {
+        switch ([string]$_.agent_status) {
+            'blocked' { 0 }
+            'working' { 1 }
+            default   { 2 }
+        }
+    })
+}
+function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = '') {
     $mutex = New-PluginMutex "pane/$Pane"
     $locked = $false
     try {
@@ -67,17 +137,42 @@ function Approve-Pane([string]$Pane, [string]$Agent) {
             }
         }
         $sent = 0
+        $lastAction = ''
         $max = [int](Number-Setting 'APPROVE_MAX_SENDS' 5)
-        while ($sent -lt $max -and (Needs-Approval $Pane) -and $keys.Count -gt 0) {
+        while ($sent -lt $max -and $keys.Count -gt 0) {
+            $hint = if ($sent -eq 0) { $InitialStatus } else { '' }
+            $action = Get-PaneAction $Pane $hint
+            if (-not $action) { break }
             if ($automatic -and -not (Test-Path -LiteralPath $flag)) { break }
+            $timeout = [int](Number-Setting 'APPROVE_LEAVE_TIMEOUT_MS' 1200)
+            if ($action -eq 'continue') {
+                $cooldown = Number-Setting 'APPROVE_CONTINUE_COOLDOWN_SEC' 4
+                if ($script:lastContinueAt.ContainsKey($Pane) -and (([DateTime]::UtcNow - $script:lastContinueAt[$Pane]).TotalSeconds -lt $cooldown)) {
+                    break
+                }
+                try {
+                    $null = Invoke-Herdr @('agent','prompt',$Pane,'continue')
+                } catch {
+                    try { $null = Invoke-Herdr @('agent','send-keys',$Pane,'c','o','n','t','i','n','u','e','enter') } catch { break }
+                }
+                $script:lastContinueAt[$Pane] = [DateTime]::UtcNow
+                $sent++
+                $lastAction = 'continue'
+                try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','working','--timeout',"$timeout") ([Math]::Max(2000, $timeout + 1500)) } catch { }
+                Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.25)))
+                break
+            }
             try { $null = Invoke-Herdr (@('agent','send-keys',$Pane) + $keys) } catch { break }
             $sent++
-            $timeout = [int](Number-Setting 'APPROVE_LEAVE_TIMEOUT_MS' 1200)
-            try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','idle','--until','working','--until','done','--timeout',"$timeout") } catch { }
-            Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.15)))
+            $lastAction = 'approve'
+            if (-not $hint -or $hint -eq 'blocked') {
+                try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','idle','--until','working','--until','done','--timeout',"$timeout") ([Math]::Max(2000, $timeout + 1500)) } catch { }
+            }
+            Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.25)))
         }
         if ($sent -eq 0) { return '-' }
-        if (Needs-Approval $Pane) { return '0' }
+        if ($lastAction -eq 'continue') { return '1' }
+        if ((Get-PaneAction $Pane) -eq 'approve') { return '0' }
         return '1'
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
 }
@@ -97,7 +192,9 @@ switch ($Mode) {
         if (-not (Test-Path -LiteralPath $flag) -or -not $env:HERDR_PLUGIN_EVENT_JSON) { return }
         Start-Monitor
         $eventData = ($env:HERDR_PLUGIN_EVENT_JSON | ConvertFrom-Json).data
-        if ($eventData.agent_status -eq 'blocked' -and $eventData.pane_id) { $null = Approve-Pane ([string]$eventData.pane_id) ([string]$eventData.agent) }
+        if ($eventData.agent_status -eq 'blocked' -and $eventData.pane_id) {
+            $null = Approve-Pane ([string]$eventData.pane_id) ([string]$eventData.agent) 'blocked'
+        }
     }
     'startup' {
         if (Test-Path -LiteralPath $flag) { Start-Monitor }
@@ -116,11 +213,12 @@ switch ($Mode) {
             while (Test-Path -LiteralPath $flag) {
                 try {
                     # Status events are only hints: stacked or misdetected prompts
-                    # may never produce another blocked transition.
-                    $agents = (Invoke-Herdr @('agent','list') | ConvertFrom-Json).result.agents
+                    # may never produce another blocked transition. Prioritize red
+                    # (blocked) panes first, then green (working) panes.
+                    $agents = Get-SortedAgents
                     foreach ($agent in $agents) {
                         if (-not (Test-Path -LiteralPath $flag)) { break }
-                        $result = Approve-Pane ([string]$agent.pane_id) ([string]$agent.agent)
+                        $result = Approve-Pane ([string]$agent.pane_id) ([string]$agent.agent) ([string]$agent.agent_status)
                         if ($result -eq '1' -or $result -eq '0') {
                             Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) pane=$($agent.pane_id) result=$result"
                         }
@@ -129,7 +227,7 @@ switch ($Mode) {
                     # Herdr may be restarting. Keep the persisted toggle and retry.
                     Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $_"
                 }
-                Start-Sleep -Milliseconds ([Math]::Max(100, [int](1000 * (Number-Setting 'APPROVE_AUTO_POLL_SEC' 1))))
+                Start-Sleep -Milliseconds ([Math]::Max(100, [int](1000 * (Number-Setting 'APPROVE_AUTO_POLL_SEC' 0.3))))
             }
         } finally {
             if ($locked) { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue; $mutex.ReleaseMutex() }
@@ -142,10 +240,10 @@ switch ($Mode) {
         try {
             try { $locked = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $locked = $true }
             if (-not $locked) { return }
-            $agents = (Invoke-Herdr @('agent','list') | ConvertFrom-Json).result.agents
+            $agents = Get-SortedAgents
             $approved = 0; $stuck = 0
             foreach ($agent in $agents) {
-                $result = Approve-Pane ([string]$agent.pane_id) ([string]$agent.agent)
+                $result = Approve-Pane ([string]$agent.pane_id) ([string]$agent.agent) ([string]$agent.agent_status)
                 if ($result -eq '1') { $approved++ } elseif ($result -eq '0') { $stuck++ }
             }
             if ($approved -or $stuck) { Notify "Approved $approved agents; $stuck still blocked" }

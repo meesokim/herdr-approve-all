@@ -21,19 +21,27 @@ try {
     $env:MOCK_HERDR_DIR = $tmp
     $env:APPROVE_AUTO_POLL_SEC = '0.1'
     $env:APPROVE_SETTLE_SEC = '0.01'
+    $env:APPROVE_CONTINUE_COOLDOWN_SEC = '0.05'
     $mock = @'
 @echo off
 if "%1 %2"=="agent list" echo {"result":{"agents":[{"pane_id":"pane-1","agent":"codex"}]}}
 if "%1 %2"=="agent get" if exist "%MOCK_HERDR_DIR%\pending" echo {"result":{"agent":{"agent_status":"blocked"}}}
 if "%1 %2"=="agent get" if not exist "%MOCK_HERDR_DIR%\pending" echo {"result":{"agent":{"agent_status":"working"}}}
+if "%1 %2"=="agent read" if exist "%MOCK_HERDR_DIR%\fallback_screen.txt" type "%MOCK_HERDR_DIR%\fallback_screen.txt"
 if "%1 %2"=="agent read" if exist "%MOCK_HERDR_DIR%\fallback" echo 1. Yes - enter to confirm - esc to cancel
 if "%1 %2"=="agent send-keys" goto send
+if "%1 %2"=="agent prompt" goto prompt
 exit /b 0
 :send
 echo %4 %5>>"%MOCK_HERDR_DIR%\sent"
 if exist "%MOCK_HERDR_DIR%\queued" goto stacked
 if exist "%MOCK_HERDR_DIR%\pending" del "%MOCK_HERDR_DIR%\pending"
 if exist "%MOCK_HERDR_DIR%\fallback" del "%MOCK_HERDR_DIR%\fallback"
+if exist "%MOCK_HERDR_DIR%\fallback_screen.txt" del "%MOCK_HERDR_DIR%\fallback_screen.txt"
+exit /b 0
+:prompt
+echo prompt:%4>>"%MOCK_HERDR_DIR%\sent"
+if exist "%MOCK_HERDR_DIR%\fallback_screen.txt" del "%MOCK_HERDR_DIR%\fallback_screen.txt"
 exit /b 0
 :stacked
 del "%MOCK_HERDR_DIR%\queued"
@@ -47,6 +55,71 @@ exit /b 0
     & $script sweep
     if ((Send-Count) -ne 2) { throw 'sweep did not drain stacked prompts' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -First 1).Trim() -ne 'y enter') { throw 'sweep did not send configured keys' }
+
+    # Verify agy sandbox-bypass prompt (no "esc to cancel" footer) is approved while status is working.
+    $bypassScreen = @"
+Requesting permission for:
+   node "C:\scratch\find_reg_mac_formula.js"
+
+Allow sandbox bypass for command execution?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation
+  3. Yes, and always allow (Persist to settings.json)
+  4. No, cancel
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $bypassScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 3) { throw 'sweep missed agy sandbox-bypass prompt without esc to cancel' }
+
+    # Verify agy outside-workspace file access prompt (no "esc to cancel" footer) is approved while status is working.
+    $outsideScreen = @"
+Reason: outside workspace
+
+Allow access to this file?
+> 1. Yes, allow access
+  2. No, deny access
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $outsideScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 4) { throw 'sweep missed agy outside-workspace file access prompt' }
+
+    # Verify transient network issue screen submits "continue".
+    $rule = ([string][char]0x2500) * 60
+    $warn = [string][char]0x26a0
+    $netErrorScreen = @"
+$warn There was a network issue connecting to the server, please try again.
+Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
+
+$rule
+> 
+$rule
+? for shortcuts                               accept-edits
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $netErrorScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 5) { throw 'sweep did not submit continue on network error screen' }
+    if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'prompt:continue') { throw 'sweep did not send continue prompt' }
+
+    # Verify normal working screen with markdown list + quoted network error + composer box does NOT false-trigger.
+    $workingScreen = @"
+  1. First normal markdown list item in scrollback
+  2. Second normal markdown list item in scrollback
+  > 1. Yes, allow access
+  > $warn There was a network issue connecting to the server, please try again.
+    Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
+
+Running command...
+
+$rule
+> 
+$rule
+esc to cancel                               accept-edits
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $workingScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 5) { throw 'sweep falsely triggered on normal working screen with scrollback' }
+    Remove-Item -LiteralPath (Join-Path $tmp 'fallback_screen.txt') -Force -ErrorAction SilentlyContinue
+
     & $script on
     if (-not (Test-Path (Join-Path $tmp 'auto-approve'))) { throw 'on did not create flag' }
     $pidFile = Join-Path $env:HERDR_PLUGIN_STATE_DIR 'monitor.pid'
@@ -55,13 +128,13 @@ exit /b 0
     # No event is dispatched for any of these prompts, including a prompt whose
     # semantic status stays working. The same worker must handle every wave.
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 3 } 'first automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 6 } 'first automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'first prompt did not settle'
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 4 } 'second automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 7 } 'second automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'second prompt did not settle'
     Set-Content (Join-Path $tmp 'fallback') ''
-    Wait-Until { (Send-Count) -ge 5 } 'prompt reported as working was missed'
+    Wait-Until { (Send-Count) -ge 8 } 'prompt reported as working was missed'
     & $script startup
     if ([int](Get-Content $pidFile) -ne $workerPid) { throw 'startup replaced an active monitor' }
     & $script off

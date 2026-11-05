@@ -1,21 +1,24 @@
 # herdr-approve-all
 
-This fork adds native Windows PowerShell support to
+This fork adds native Windows PowerShell support and enhanced prompt/error
+recovery for Ubuntu, macOS, and Windows to
 [RenKoya1/herdr-approve-all](https://github.com/RenKoya1/herdr-approve-all).
 
 A [herdr](https://herdr.dev) plugin that approves every blocked agent at once —
 or automatically, the moment one blocks.
 
-When you run a fleet of coding agents (Claude Code, Codex, Gemini CLI, ...),
-permission prompts pile up and you end up pressing **Yes** pane by pane. This
-plugin sends the confirm key to every waiting pane, accepting the highlighted
-default option (usually **Yes**) in one keystroke — or with zero keystrokes in
-auto mode — then checks each pane actually moved on and answers whatever queued
-up behind it.
+When you run a fleet of coding agents (Claude Code, Codex, Gemini CLI,
+Antigravity `agy`, ...), permission prompts pile up and you end up pressing
+**Yes** pane by pane. This plugin sends the confirm key to every waiting pane,
+accepting the highlighted default option (usually **Yes**) in one keystroke —
+or with zero keystrokes in auto mode — then checks each pane actually moved on
+and answers whatever queued up behind it.
 
 Works with any agent herdr detects; the confirm key defaults to `Enter`, which
-accepts the highlighted default in Claude Code, Codex, Gemini CLI, and the rest
-of herdr's supported agents.
+accepts the highlighted default in Claude Code, Codex, Gemini CLI, Antigravity
+(`agy`), and the rest of herdr's supported agents. When an agent stops on
+`There was a network issue connecting to the server, please try again.`, the
+plugin automatically submits `continue` to resume the interrupted turn.
 
 ## Install
 
@@ -23,9 +26,10 @@ of herdr's supported agents.
 herdr plugin install meesokim/herdr-approve-all
 ```
 
-The default `main` branch includes the Windows implementation. The plugin ID
-remains **`renkoya1.approve-all`** on every platform; installing from this fork
-does not change the action prefix to `meesokim`.
+The default `main` branch includes both the Unix (`bash`) and Windows
+(`powershell.exe`) implementations. The plugin ID remains
+**`renkoya1.approve-all`** on every platform; installing from this fork does not
+change the action prefix to `meesokim`.
 
 ## Windows quick start
 
@@ -61,8 +65,9 @@ herdr plugin action invoke renkoya1.approve-all.approve-blocked-windows
 ```
 
 Windows action IDs end in `-windows`; the unsuffixed actions below are for
-Linux/macOS. Windows sweeps process panes sequentially. Hold-to-repeat and idle
-debounce described below apply to Unix only.
+Linux/macOS. Windows sweeps process panes sequentially, prioritizing `blocked`
+(red) panes first. Hold-to-repeat and idle debounce described below apply to
+Unix only.
 
 ### Windows keybinding
 
@@ -87,31 +92,28 @@ is only needed after editing the keybinding; automatic approval runs continuousl
 once enabled. See [Herdr configuration](https://herdr.dev/docs/configuration/)
 for config-path overrides and prefix settings.
 
-### Windows auto-mode behavior and troubleshooting
+### Auto-mode monitor and troubleshooting (Ubuntu, macOS, and Windows)
 
-On Windows, enabling auto mode also starts one hidden PowerShell monitor. It
-rechecks the fleet every `APPROVE_AUTO_POLL_SEC` seconds (default `1`), so later
-prompts are handled even when Herdr does not emit another status-change event.
-The monitor also checks the visible prompt fallback, uses the same pane locks as
-manual/event actions, and exits when auto mode is turned off. A Windows startup
-hook restores it when the persisted toggle is on. Event hooks can restart it if
-it has stopped. Enabling auto mode again starts it for an already-running Herdr.
-The worker's PID and latest result/error are written to `monitor.pid` and
-`monitor.log` under `HERDR_PLUGIN_STATE_DIR` (or `state` under the config dir).
+Enabling auto mode (`auto-on` on Linux/macOS or `auto-on-windows` on Windows)
+starts a background monitor that rechecks the fleet every `APPROVE_AUTO_POLL_SEC`
+seconds (default `0.3`), prioritizing `blocked` (red) panes first and then
+inspecting `working` (green) and `idle` panes via a single visible-screen read.
+This ensures prompts that never emit a `blocked` transition (such as `agy`
+sandbox-bypass prompts, outside-workspace file access prompts, or transient
+network errors requiring `continue`) are handled automatically on both Ubuntu
+and Windows. Startup hooks restore the monitor when Herdr starts with the
+persisted toggle enabled, and status-change events restart it if needed.
 
-If automatic approval does not continue, invoke `auto-on-windows` again to start
-the monitor, then inspect plugin status and logs:
+If automatic approval does not continue, invoke `auto-on` (Linux/macOS) or
+`auto-on-windows` (Windows) again to start the monitor, then inspect plugin
+status and logs:
 
-```powershell
+```sh
 herdr plugin list
 herdr plugin action list --plugin renkoya1.approve-all
 herdr plugin log list --plugin renkoya1.approve-all --limit 10
 herdr agent list
 ```
-
-Installing again uses the same plugin ID and config directory, so an existing
-auto-approve toggle may still be on. Run `auto-off-windows` before switching
-sources or disabling the plugin if the monitor is running.
 
 ### Local development instead of GitHub installation
 
@@ -120,7 +122,8 @@ git clone https://github.com/meesokim/herdr-approve-all.git
 herdr plugin link .\herdr-approve-all --enabled
 ```
 
-Enable auto mode with the same `auto-on-windows` command after linking.
+Enable auto mode with `auto-on` (Linux/macOS) or `auto-on-windows` (Windows)
+after linking.
 
 ## Manual sweep (Linux/macOS)
 
@@ -150,17 +153,18 @@ still blocked after the sweep gave up on them.
 
 ## Auto-approve mode (Linux/macOS)
 
-Approve every prompt the instant an agent blocks — no keypress at all:
+Approve every prompt automatically — no keypress at all:
 
 ```sh
 herdr plugin action invoke renkoya1.approve-all.auto-on
 herdr plugin action invoke renkoya1.approve-all.auto-off
 ```
 
-The plugin subscribes to agent status changes; when a pane turns `blocked`, it
-sends the confirm key immediately and then drains whatever queued up behind it.
-The toggle persists across restarts (it's a marker file in the plugin config
-dir).
+The plugin subscribes to agent status changes (`blocked` panes get `Enter`
+immediately without an extra status query) and also runs a lightweight
+background monitor (`scripts/auto-toggle.sh monitor`) so prompts whose status
+remains `working`/`idle` or network errors requiring `continue` are handled
+automatically. The toggle persists across restarts.
 
 **This is the YOLO switch.** It approves *every* prompt in *every* pane,
 including "run this destructive command?". Turn it on only when you'd answer
@@ -196,30 +200,20 @@ Every agent pane is a candidate, not only the ones herdr reports as `blocked`.
 herdr derives that status by scraping the terminal, and a live prompt can lose
 to a higher-priority detection rule (a spinner in the OSC title, the composer's
 own idle rule) — leaving a pane that is visibly waiting reported as
-`working`/`idle` and, before this, silently skipped.
+`working`/`idle`.
 
-The fallback therefore also matches the visible screen: an `esc to cancel`
-footer (only rendered while a dialog is live) plus a numbered/highlighted option
-line. Set `APPROVE_SCRAPE_FALLBACK=0` to trust herdr's status alone.
+The fallback matches the active visible screen (below any active composer input
+box so scrollback history never false-triggers), supporting both classic
+`esc to cancel` dialogs and `agy` permission prompts (`> 1. Yes, run command`,
+`> 1. Yes, allow access`, sandbox bypass, outside-workspace access) as well as
+submitting `continue` on transient network issue screens. Set
+`APPROVE_SCRAPE_FALLBACK=0` to trust herdr's status alone.
 
 ## Hold the key to keep approving
 
 Auto-repeat is used rather than fought. **Hold the key down and the sweep stays
 alive**, re-checking the fleet every ~240ms, so prompts that appear while you
 are still holding get approved as they arrive. Let go and it stops.
-
-Mechanically: the first instance takes the lock and loops; every repeat that
-lands while it runs drops a marker and exits in ~10ms, so herdr's concurrent
-plugin command cap (32) is never approached. When the markers stop arriving,
-the grace window lapses and the sweeper exits (with a `HOLD_MAX` backstop for a
-wedged key).
-
-The only debounce left applies to a sweep that found **nothing**: a 1s window,
-so a held key over a quiet fleet doesn't re-list it as fast as bash can fork. A
-sweep that *did* approve something sets no window at all, so a deliberate
-re-press is always honoured immediately. (Before 0.3.0 a flat 10s window applied
-to every sweep, which silently ate exactly the presses that mattered: the ones
-aimed at the next prompt in a burst.)
 
 ## Tuning
 
@@ -229,33 +223,20 @@ Env vars, read by both the sweep and the auto handler:
 | --- | --- | --- |
 | `APPROVE_MAX_SENDS` | `5` | confirm keys per pane, per pass |
 | `APPROVE_LEAVE_TIMEOUT_MS` | `1200` | how long to wait for a pane to leave `blocked` |
-| `APPROVE_SETTLE_SEC` | `0.15` | pause before re-checking, so a queued prompt can paint |
+| `APPROVE_SETTLE_SEC` | `0.2` (`0.25` Win) | pause before re-checking, so a queued prompt or redraw can paint |
 | `APPROVE_SCRAPE_FALLBACK` | `1` | also sweep panes whose live prompt herdr missed |
 | `APPROVE_IDLE_DEBOUNCE_SEC` | `1` | window after an empty sweep |
 | `APPROVE_HOLD_POLL_SEC` | `0.08` | hold-detection granularity |
 | `APPROVE_HOLD_POLLS` | `3` | grace windows before a hold is considered released |
 | `APPROVE_HOLD_MAX_SEC` | `60` | backstop: longest a single hold keeps sweeping |
-| `APPROVE_AUTO_POLL_SEC` | `1` | Windows auto monitor pause between fleet checks (minimum `0.1`) |
+| `APPROVE_AUTO_POLL_SEC` | `0.3` | auto monitor pause between fleet checks (minimum `0.1`) |
+| `APPROVE_CMD_TIMEOUT_MS` / `APPROVE_CMD_TIMEOUT_SEC` | `4000` / `4` | timeout per `herdr` CLI call |
+| `APPROVE_CONTINUE_COOLDOWN_SEC` | `4` | per-pane cooldown between automatic `continue` submissions |
 
-## Windows verification
+## Verification
 
-Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows-smoke.ps1`.
-The test uses a mock Herdr in a temporary directory and checks stacked prompts,
-configured keys, repeated automatic prompts without events, visible-prompt
-fallback when the reported status stays working, stopping auto mode, and
-restoring the persisted toggle at startup.
-
-## What it does (and doesn't)
-
-- Sends the confirm key, i.e. accepts whatever option is highlighted. For
-  permission prompts that is **Yes**; for other blocking dialogs (question
-  cards, plan approvals, trust dialogs) it picks the default option.
-- A pane still blocked after `APPROVE_MAX_SENDS` is reported in the toast rather
-  than passed off as approved.
-
-**Caution**: this is indiscriminate by design. If a pending prompt is asking to
-run a destructive command, this approves it too. Glance at your panes before
-pressing the key — or accept the risk knowingly with auto mode.
+- **Linux / macOS (Ubuntu)**: Run `bash tests/smoke.sh`
+- **Windows**: Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows-smoke.ps1`
 
 ## Requirements
 

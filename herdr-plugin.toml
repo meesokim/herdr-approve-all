@@ -6,6 +6,10 @@ description = "Approve every blocked agent at once: sends Enter to all waiting p
 platforms = ["linux", "macos", "windows"]
 
 [[startup]]
+command = ["bash", "scripts/auto-toggle.sh", "startup"]
+platforms = ["linux", "macos"]
+
+[[startup]]
 command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "startup"]
 platforms = ["windows"]
 
