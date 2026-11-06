@@ -106,69 +106,79 @@ agent_status() {
     'print(d.get("result", {}).get("agent", {}).get("agent_status", ""))'
 }
 
-# screen_active_region: strips conversation scrollback at and above an active
-# composer box (20+ '─' border, '> ...' input line(s), 20+ '─' border) so
-# markdown numbered lists or user-pasted prompt text in scrollback never
-# false-trigger while an agent is working. Compatible with mawk, gawk, BSD awk.
-screen_active_region() {
-  awk '
-    BEGIN { rule = "────────────────────"; state = 0; buf = "" }
-    index($0, rule) > 0 {
-      if (state == 2) { buf = ""; state = 0; next }
-      state = 1
-      buf = buf $0 "\n"
+# screen_has_prompt <screen_text>: true when active screen shows a live dialog.
+# Supports both classic "esc to cancel" dialogs and agy permission menus
+# (sandbox bypass, outside-workspace file access, command execution) whether
+# rendered above or in place of the composer box, while ignoring scrollback.
+# Compatible with mawk, gawk, BSD awk.
+screen_has_prompt() {
+  [ -n "${1:-}" ] || return 1
+  printf '%s\n' "$1" | tr -d '\r' | awk '
+    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0 }
+    /^[[:space:]]*(┃|│|\|)?[[:space:]]*((❯|>)[[:space:]]*[0-9]+\.[[:space:]]+|1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)).*([Ee]nter to (confirm|select)|[Ee]sc to cancel)/ {
+      has_opt1 = 1
+      matched = 1
       next
     }
-    state >= 1 && /^[[:space:]]*>/ {
-      state = 2
-      buf = buf $0 "\n"
+    /^[[:space:]]*(┃|│|\|)?[[:space:]]*(❯|>)[[:space:]]*1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)/ {
+      has_opt1 = 1
+      if (has_cue) matched = 1
       next
     }
-    {
-      state = 0
-      buf = buf $0 "\n"
+    has_opt1 && /^[[:space:]]*(┃|│|\|)?[[:space:]]*[2-9]\.[[:space:]]+([Yy]es|[Nn]o|[Aa]llow|[Dd]eny|[Aa]ccept|[Rr]eject)([[:space:],-]|$)/ {
+      matched = 1
+      next
     }
-    END { printf "%s", buf }
+    has_opt1 && /^[[:space:]]*(┃|│|\|)?[[:space:]]*(.*([Nn]avigate|tab [Aa]mend|ctrl\+g|[Ee]nter to (confirm|select))|[Ee]sc to cancel[[:space:]]*$)/ {
+      matched = 1
+      next
+    }
+    !/^[[:space:]]*>/ && /([Aa]llow (sandbox bypass|access)|[Aa]ccept this file edit\?|[Cc]onfirm the command is safe|[Rr]equesting permission for:|[Rr]un this command\?|[Rr]eason:[[:space:]]*outside workspace|[Dd]o you want to)/ {
+      has_cue = 1
+      next
+    }
+    matched || has_opt1 {
+      if (/^[[:space:]]*$/ || index($0, rule) > 0 || /^[[:space:]]*>[[:space:]]*$/) next
+      if (/^[[:space:]]*(┃|│|\||└|├|↳|●[[:space:]]+Agent\()/) next
+      if (/^[[:space:]]*\?[[:space:]]+for[[:space:]]+shortcuts/ || /(accept-edits|request-review|auto-approve|subagent\(s\))/) next
+      if (has_opt1 && /^[[:space:]][[:space:]]+[^[:space:]>]/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) {
+        matched = 0
+        next
+      }
+      has_cue = 0
+      has_opt1 = 0
+      matched = 0
+    }
+    END { exit (matched ? 0 : 1) }
   '
 }
 
-# screen_has_prompt <screen_text>: true when active screen shows a live dialog.
-# Supports both classic "esc to cancel" dialogs and agy permission menus where
-# the footer may be omitted or scrolled off (sandbox bypass, outside-workspace).
-screen_has_prompt() {
-  local active
-  [ -n "${1:-}" ] || return 1
-  active=$(printf '%s\n' "$1" | tr -d '\r' | screen_active_region)
-  [ -n "$active" ] || return 1
-  if printf '%s\n' "$active" | grep -qiE '^[[:space:]]*(❯|>)[[:space:]]*1\.[[:space:]]+(Yes|Allow)([[:space:],]|$)'; then
-    printf '%s\n' "$active" | grep -qiE '^[[:space:]]*2\.[[:space:]]+(Yes|No|Allow|Deny)([[:space:],]|$)|esc to cancel|Navigate|enter to (confirm|select)|Requesting permission for:|Run this command\?|Allow (sandbox bypass|access)|Reason:[[:space:]]*outside workspace|Do you want to' && return 0
-  fi
-  printf '%s\n' "$active" | grep -qi 'esc to cancel' || return 1
-  printf '%s\n' "$active" | grep -qiE '^[[:space:]]*((❯|>)[[:space:]]*[0-9]+\.[[:space:]]+|1\.[[:space:]]+(Yes|Allow)([[:space:],-]|$))|enter to (confirm|select)'
-}
-
-# screen_needs_continue <screen_text>: true when transient server/network error
-# sits at the bottom of the transcript right above an empty composer box (or end
-# of screen), ignoring user-quoted (> ...) lines in scrollback.
+# screen_needs_continue <screen_text>: true when transient server/network/stream
+# error sits at the bottom of the transcript right above an empty composer box
+# (or end of screen), ignoring user-quoted (> ...) lines in scrollback.
 screen_needs_continue() {
   [ -n "${1:-}" ] || return 1
   printf '%s\n' "$1" | tr -d '\r' | awk '
-    BEGIN { rule = "────────────────────"; matched = 0; box = 0 }
-    !/^[[:space:]]*>/ && /[Tt]here was a network issue connecting to the server,[[:space:]]*please try again\./ {
+    BEGIN { rule = "──────────"; matched = 0; saw_id = 0; box = 0 }
+    !/^[[:space:]]*>/ && /([Tt]here was a network issue connecting to the server,[[:space:]]*please try again\.|[Aa]gent executor error:|[Ss]tream reading error:|[Ss]tream idle timeout|[Cc]ontext deadline exceeded)/ {
       matched = 1
+      saw_id = 0
       box = 0
       next
     }
     matched {
-      if (/^[[:space:]]*$/ || /^[[:space:]]*[Ee]rror ID:[[:space:]]*[^[:space:]]+/) next
+      if (/^[[:space:]]*$/) next
+      if (/^[[:space:]]*[Ee]rror ID:[[:space:]]*[^[:space:]]+/) { saw_id = 1; next }
+      if (box == 0 && !saw_id && !/^[[:space:]]*>/ && /(generating and executing|stream|timeout|deadline exceeded|please try again)/) next
       if (box == 0 && index($0, rule) > 0) { box = 1; next }
       if (box == 1 && /^[[:space:]]*>[[:space:]]*$/) { box = 2; next }
       if (box == 2 && index($0, rule) > 0) { box = 3; next }
       if (box == 3) {
-        if (/[Rr]unning command/) { matched = 0; box = 0 }
+        if (/([Rr]unning command|[Rr]eading file|[Tt]hinking)/) { matched = 0; box = 0 }
         next
       }
       matched = 0
+      saw_id = 0
       box = 0
     }
     END { exit (matched && (box == 0 || box == 3) ? 0 : 1) }
@@ -176,46 +186,41 @@ screen_needs_continue() {
 }
 
 # screen_needs_ctrl_k <screen_text>: true when an active subagent approval
-# banner (e.g. "┃ self needs approval for Bash" ... "┃ ctrl+k approve · alt+j manage")
+# banner (e.g. "┃ research needs approval for Read" ... "┃ ctrl+k approve · alt+j manage")
 # is waiting on screen, ignoring user-quoted (> ...) text in scrollback.
 screen_needs_ctrl_k() {
   [ -n "${1:-}" ] || return 1
   printf '%s\n' "$1" | tr -d '\r' | awk '
-    BEGIN { rule = "────────────────────"; has_header = 0; in_user = 0; matched = 0; box = 0 }
+    BEGIN { rule = "──────────"; has_header = 0; matched = 0; box = 0 }
     index($0, rule) > 0 && $0 !~ /^[[:space:]]*(┃|│|\|)/ {
       if (matched) {
         if (box == 0) { box = 1; next }
-        if (box == 2) { box = 3; next }
+        if (box == 2 || box == 1 || box == 3) { box = 3; next }
       }
-      in_user = 0
       next
     }
     /^[[:space:]]*>/ {
-      if (matched && (box == 1 || box == 2)) { box = 2; next }
-      in_user = 1
+      if (matched && (box == 1 || box == 2) && /^[[:space:]]*>[[:space:]]*$/) { box = 2; next }
       has_header = 0
       matched = 0
       box = 0
       next
     }
-    $0 !~ /^[[:space:]]*(┃|│|\|)/ {
-      in_user = 0
-    }
-    !in_user && /[Nn]eeds approval( for )?/ {
+    /[Nn]eeds approval( for )?/ {
       has_header = 1
     }
-    !in_user && /[Cc]trl\+k[[:space:]]+(to[[:space:]]+)?approve/ && (has_header || /[Aa]lt\+j[[:space:]]+manage/ || /^[[:space:]]*(┃|│|\|)/) {
+    /[Cc]trl\+k[[:space:]]+(to[[:space:]]+)?approve/ && (has_header || /[Aa]lt\+j[[:space:]]+manage/ || /^[[:space:]]*(┃|│|\|)/) {
       matched = 1
       box = 0
       next
     }
     matched {
-      if (/^[[:space:]]*$/ || /^[[:space:]]*(┃|│|\||└|├|●|✻|⣟|⣯|⣷|⣾|⣽|⣻|⢿|⡿)/) next
-      if ((box == 0 || box == 3) && (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Ee]sc[[:space:]]+to[[:space:]]+cancel)/ || /(accept-edits|request-review|auto-approve)/)) next
+      if (/^[[:space:]]*$/ || /^[[:space:]]*(┃|│|\||└|├|↳|●|○|✻|⣟|⣯|⣷|⣾|⣽|⣻|⢿|⡿)/) next
+      if ((box == 0 || box == 1 || box == 3) && (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Ee]sc[[:space:]]+to[[:space:]]+cancel)/ || /(accept-edits|request-review|auto-approve|subagent\(s\))/)) next
       matched = 0
       box = 0
     }
-    END { exit (matched && (box == 0 || box == 3) ? 0 : 1) }
+    END { exit (matched && (box == 0 || box == 1 || box == 3) ? 0 : 1) }
   '
 }
 
@@ -228,11 +233,18 @@ pane_action() {
     status=$(agent_status "$pane")
   fi
   if [ "$status" = "blocked" ]; then
+    if [ "${2:-}" = "blocked" ] && [ "$APPROVE_SCRAPE_FALLBACK" = "1" ]; then
+      out=$(run_herdr agent read "$pane" --source visible --lines 40 2>/dev/null || true)
+      if [ -n "$out" ] && screen_needs_ctrl_k "$out"; then
+        printf 'ctrl+k'
+        return 0
+      fi
+    fi
     printf 'approve'
     return 0
   fi
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$pane" --source visible --lines 28 2>/dev/null) || return 1
+  out=$(run_herdr agent read "$pane" --source visible --lines 40 2>/dev/null) || return 1
   if screen_needs_ctrl_k "$out"; then
     printf 'ctrl+k'
     return 0
@@ -251,21 +263,21 @@ pane_action() {
 prompt_visible() {
   local out
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$1" --source visible --lines 28 2>/dev/null) || return 1
+  out=$(run_herdr agent read "$1" --source visible --lines 40 2>/dev/null) || return 1
   screen_has_prompt "$out"
 }
 
 ctrl_k_needed() {
   local out
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$1" --source visible --lines 28 2>/dev/null) || return 1
+  out=$(run_herdr agent read "$1" --source visible --lines 40 2>/dev/null) || return 1
   screen_needs_ctrl_k "$out"
 }
 
 continue_needed() {
   local out
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$1" --source visible --lines 28 2>/dev/null) || return 1
+  out=$(run_herdr agent read "$1" --source visible --lines 40 2>/dev/null) || return 1
   screen_needs_continue "$out"
 }
 
@@ -357,7 +369,11 @@ start_monitor() {
   local slock="$STATE_DIR/monitor.start.lock"
   take_lock "$slock" 5 || return 0
   if ! monitor_running; then
-    nohup bash "$LIB_DIR/auto-toggle.sh" monitor >/dev/null 2>&1 < /dev/null &
+    if command -v setsid >/dev/null 2>&1; then
+      setsid bash "$LIB_DIR/auto-toggle.sh" monitor >/dev/null 2>&1 < /dev/null &
+    else
+      nohup bash "$LIB_DIR/auto-toggle.sh" monitor >/dev/null 2>&1 < /dev/null &
+    fi
     printf '%s\n' "$!" > "$PID_FILE" 2>/dev/null || true
   fi
   rmdir "$slock" 2>/dev/null || true

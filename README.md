@@ -18,9 +18,10 @@ Works with any agent herdr detects; the confirm key defaults to `Enter`, which
 accepts the highlighted default in Claude Code, Codex, Gemini CLI, Antigravity
 (`agy`), and the rest of herdr's supported agents. When a subagent approval
 banner is shown (`needs approval for ...` / `ctrl+k approve · alt+j manage`),
-the plugin sends `ctrl+k`. When an agent stops on
-`There was a network issue connecting to the server, please try again.`, the
-plugin automatically submits `continue` to resume the interrupted turn.
+the plugin sends `ctrl+k`. When an agent stops on transient server or stream
+errors (`There was a network issue connecting to the server, please try again.`
+or `agent executor error: ... stream reading error: stream idle timeout ... context deadline exceeded`),
+the plugin automatically submits `continue` to resume the interrupted turn.
 
 ## Install
 
@@ -204,12 +205,13 @@ to a higher-priority detection rule (a spinner in the OSC title, the composer's
 own idle rule) — leaving a pane that is visibly waiting reported as
 `working`/`idle`.
 
-The fallback matches the active visible screen (below any active composer input
-box so scrollback history never false-triggers), supporting both classic
-`esc to cancel` dialogs and `agy` permission prompts (`> 1. Yes, run command`,
-`> 1. Yes, allow access`, sandbox bypass, outside-workspace access) as well as
-submitting `continue` on transient network issue screens. Set
-`APPROVE_SCRAPE_FALLBACK=0` to trust herdr's status alone.
+The fallback matches the active visible screen (while ignoring scrollback
+history), supporting classic `esc to cancel` dialogs, `agy` permission prompts
+(`> 1. Yes, run command`, `> 1. Yes, allow access`, `> 1. Yes, accept this change`,
+sandbox bypass, outside-workspace access, file edit acceptance), `ctrl+k`
+subagent approval banners, and submitting `continue` on transient network or
+stream idle timeout error screens. Set `APPROVE_SCRAPE_FALLBACK=0` to trust
+herdr's status alone.
 
 ## Hold the key to keep approving
 

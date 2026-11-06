@@ -1,5 +1,13 @@
-param([Parameter(Mandatory=$true)][ValidateSet('sweep','on','off','event','startup','monitor')][string]$Mode)
+param(
+    [Parameter(Mandatory=$true)][ValidateSet('sweep','on','off','event','startup','monitor')][string]$Mode,
+    [string]$ConfigDir = '',
+    [string]$StateDir = '',
+    [string]$HerdrBin = ''
+)
 $ErrorActionPreference = 'Stop'
+if ($ConfigDir) { $env:HERDR_PLUGIN_CONFIG_DIR = $ConfigDir }
+if ($StateDir) { $env:HERDR_PLUGIN_STATE_DIR = $StateDir }
+if ($HerdrBin) { $env:HERDR_BIN_PATH = $HerdrBin }
 $herdr = if ($env:HERDR_BIN_PATH) { $env:HERDR_BIN_PATH } else {
     $cmd = Get-Command 'herdr' -ErrorAction SilentlyContinue
     if ($cmd -and $cmd.Source) { $cmd.Source } else { 'herdr' }
@@ -67,88 +75,161 @@ function Start-Monitor {
         if (-not $locked) { return }
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
     $null = New-Item -ItemType Directory -Path $state -Force
-    $workerArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" monitor'
-    # A detached worker is independent of Herdr's short-lived action/event jobs.
-    # It inherits HERDR_BIN_PATH and the socket/named-pipe invocation context.
-    $null = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $workerArguments -WindowStyle Hidden
+    $psExe = Join-Path $PSHOME 'powershell.exe'
+    $workerArguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" monitor -ConfigDir "' + $config + '" -StateDir "' + $state + '" -HerdrBin "' + $herdr + '"'
+    # When invoked by Herdr on Windows, short-lived action/event/startup hooks
+    # may run inside a Job Object that terminates child processes on exit.
+    # Spawning via WMI (Win32_Process.Create) places the worker under WmiPrvSE.exe
+    # outside the hook's Job Object. Fall back to Start-Process in mock tests.
+    if (-not $env:MOCK_HERDR_DIR) {
+        try {
+            $startupClass = Get-CimClass -ClassName Win32_ProcessStartup -ErrorAction Stop
+            $startupInfo = New-CimInstance -CimClass $startupClass -ClientOnly -Property @{ ShowWindow = [uint16]0 }
+            $cimResult = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+                CommandLine = ('"' + $psExe + '" ' + $workerArguments)
+                ProcessStartupInformation = $startupInfo
+            } -ErrorAction Stop
+            if ($cimResult -and $cimResult.ReturnValue -eq 0) { return }
+        } catch { }
+    }
+    $null = Start-Process -FilePath $psExe -ArgumentList $workerArguments -WindowStyle Hidden
 }
 function Test-PromptVisible([string]$Screen) {
     if (-not $Screen) { return $false }
     $rule = [string][char]0x2500
     $cursor = [string][char]0x276f
-    # Strip conversation history above an active composer box so markdown lists
-    # or user-pasted prompt text in scrollback never false-trigger while working.
-    $composerPattern = '(?s)^.*' + $rule + '{20,}\r?\n(?:\s*>[^\r\n]*\r?\n)+' + $rule + '{20,}\r?\n'
-    $active = $Screen -replace $composerPattern, ''
-    $selectedYesPattern = '(?im)^\s*[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow)\b'
-    $secondOptionPattern = '(?im)^\s*2\.\s+(?:Yes|No|Allow|Deny)\b'
-    $dialogCuePattern = '(?i)esc to cancel|Navigate|enter to (?:confirm|select)|Requesting permission for:|Run this command\?|Allow (?:sandbox bypass|access)\b|Reason:\s*outside workspace|Do you want to'
-    if ($active -match $selectedYesPattern -and ($active -match $secondOptionPattern -or $active -match $dialogCuePattern)) {
-        return $true
+    $hasCue = $false
+    $hasOpt1 = $false
+    $matched = $false
+    $opt1Pattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow|Accept)\b'
+    $optNPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:Yes|No|Allow|Deny|Accept|Reject)\b'
+    $classicLinePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow|Accept)\b).*(?:enter to (?:confirm|select)|esc to cancel)'
+    $cuePattern = '(?i)Allow (?:sandbox bypass|access)\b|Accept this file edit\?|Confirm the command is safe|Requesting permission for:|Run this command\?|Reason:\s*outside workspace|Do you want to'
+    $footerCuePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:.*(?:Navigate|tab Amend|ctrl\+g|enter to (?:confirm|select))|esc to cancel\s*$)'
+    foreach ($line in ($Screen -split "\r?\n")) {
+        if ($line -match $classicLinePattern) {
+            $hasOpt1 = $true
+            $matched = $true
+            continue
+        }
+        if ($line -match $opt1Pattern) {
+            $hasOpt1 = $true
+            if ($hasCue) { $matched = $true }
+            continue
+        }
+        if ($hasOpt1 -and $line -match $optNPattern) {
+            $matched = $true
+            continue
+        }
+        if ($hasOpt1 -and $line -match $footerCuePattern) {
+            $matched = $true
+            continue
+        }
+        if ($line -notmatch '^\s*>' -and $line -match $cuePattern) {
+            $hasCue = $true
+            continue
+        }
+        if ($matched -or $hasOpt1) {
+            if ($line -match '^\s*$' -or $line -match ('^\s*' + $rule + '{10,}\s*$') -or $line -match '^\s*>\s*$') { continue }
+            if ($line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3]' -or $line -match '(?i)^\s*\u25cf\s+Agent\(') { continue }
+            if ($line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel\b.*(?:accept-edits|request-review|auto-approve|subagent\(s\))|\S.*(?:accept-edits|request-review|auto-approve|subagent\(s\)))') { continue }
+            if ($hasOpt1 -and $line -match '^\s{2,}[^\s>]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') {
+                $matched = $false
+                continue
+            }
+            $hasCue = $false
+            $hasOpt1 = $false
+            $matched = $false
+        }
     }
-    $classicChoicePattern = '(?im)^\s*(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow)\b)|enter to (?:confirm|select)'
-    return ($active -match '(?i)esc to cancel' -and $active -match $classicChoicePattern)
+    return $matched
 }
 function Test-ContinueNeeded([string]$Screen) {
     if (-not $Screen) { return $false }
     $rule = [string][char]0x2500
-    # Match transient network errors at the bottom of the transcript right above
-    # an empty composer box (or end of screen), ignoring user-quoted (> ...) lines.
-    $pattern = '(?is)(?:^|\r?\n)\s*(?!>)[^\r\n>]*?There was a network issue connecting to the server,\s*please try again\.\s*(?:\r?\n\s*Error ID:\s*[^\r\n]+)?\s*(?:$|\r?\n' + $rule + '{20,}\r?\n\s*>\s*\r?\n' + $rule + '{20,})'
-    return ($Screen -match $pattern)
+    $matched = $false
+    $sawErrorId = $false
+    $box = 0
+    $errPattern = '(?i)There was a network issue connecting to the server,\s*please try again\.|agent executor error:|stream reading error:|stream idle timeout|context deadline exceeded'
+    foreach ($line in ($Screen -split "\r?\n")) {
+        if ($line -notmatch '^\s*>' -and $line -match $errPattern) {
+            $matched = $true
+            $sawErrorId = $false
+            $box = 0
+            continue
+        }
+        if ($matched) {
+            if ($line -match '^\s*$') { continue }
+            if ($line -match '(?i)^\s*Error ID:\s*\S+') { $sawErrorId = $true; continue }
+            if ($box -eq 0 -and -not $sawErrorId -and $line -notmatch '^\s*>' -and $line -match '(?i)generating and executing|stream|timeout|deadline exceeded|please try again') { continue }
+            if ($box -eq 0 -and $line -match ('^\s*' + $rule + '{10,}\s*$')) { $box = 1; continue }
+            if ($box -eq 1 -and $line -match '^\s*>\s*$') { $box = 2; continue }
+            if ($box -eq 2 -and $line -match ('^\s*' + $rule + '{10,}\s*$')) { $box = 3; continue }
+            if ($box -eq 3) {
+                if ($line -match '(?i)Running command|Reading file|Thinking') { $matched = $false; $box = 0 }
+                continue
+            }
+            $matched = $false
+            $sawErrorId = $false
+            $box = 0
+        }
+    }
+    return ($matched -and ($box -eq 0 -or $box -eq 3))
 }
 function Test-CtrlKNeeded([string]$Screen) {
     if (-not $Screen) { return $false }
     $rule = [string][char]0x2500
     $hasHeader = $false
-    $inUser = $false
     $matched = $false
     $box = 0
     foreach ($line in ($Screen -split "\r?\n")) {
-        if ($line -match ('^\s*' + $rule + '{20,}\s*$') -and $line -notmatch '^\s*[\u2503\u2502|]') {
+        if ($line -match ('^\s*' + $rule + '{10,}\s*$') -and $line -notmatch '^\s*[\u2503\u2502|]') {
             if ($matched) {
                 if ($box -eq 0) { $box = 1; continue }
-                if ($box -eq 2) { $box = 3; continue }
+                if ($box -eq 2 -or $box -eq 1 -or $box -eq 3) { $box = 3; continue }
             }
-            $inUser = $false
             continue
         }
         if ($line -match '^\s*>') {
-            if ($matched -and ($box -eq 1 -or $box -eq 2)) { $box = 2; continue }
-            $inUser = $true
+            if ($matched -and ($box -eq 1 -or $box -eq 2) -and $line -match '^\s*>\s*$') { $box = 2; continue }
             $hasHeader = $false
             $matched = $false
             $box = 0
             continue
         }
-        if ($line -notmatch '^\s*[\u2503\u2502|]') {
-            $inUser = $false
-        }
-        if (-not $inUser -and $line -match '(?i)\bneeds approval(?:\s+for)?\b') {
+        if ($line -match '(?i)\bneeds approval(?:\s+for)?\b') {
             $hasHeader = $true
         }
-        if (-not $inUser -and $line -match '(?i)\bctrl\+k\s+(?:to\s+)?approve\b' -and ($hasHeader -or $line -match '(?i)\balt\+j\s+manage\b' -or $line -match '^\s*[\u2503\u2502|]')) {
+        if ($line -match '(?i)\bctrl\+k\s+(?:to\s+)?approve\b' -and ($hasHeader -or $line -match '(?i)\balt\+j\s+manage\b' -or $line -match '^\s*[\u2503\u2502|]')) {
             $matched = $true
             $box = 0
             continue
         }
         if ($matched) {
-            if ($line -match '^\s*$' -or $line -match '^\s*[\u2503\u2502|\u2514\u251c\u25cf\u273b\u2800-\u28ff]') { continue }
-            if (($box -eq 0 -or $box -eq 3) -and $line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel|\S.*(?:accept-edits|request-review|auto-approve))') { continue }
+            if ($line -match '^\s*$' -or $line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3\u25cf\u25cb\u273b\u2800-\u28ff]') { continue }
+            if (($box -eq 0 -or $box -eq 1 -or $box -eq 3) -and $line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel|\S.*(?:accept-edits|request-review|auto-approve|subagent\(s\)))') { continue }
             $matched = $false
             $box = 0
         }
     }
-    return ($matched -and ($box -eq 0 -or $box -eq 3))
+    return ($matched -and ($box -eq 0 -or $box -eq 1 -or $box -eq 3))
 }
 function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
     try {
         $status = if ($KnownStatus) { $KnownStatus } else {
             [string](Invoke-Herdr @('agent','get',$Pane) | ConvertFrom-Json).result.agent.agent_status
         }
-        if ($status -eq 'blocked') { return 'approve' }
+        if ($status -eq 'blocked') {
+            if ($KnownStatus -eq 'blocked' -and $env:APPROVE_SCRAPE_FALLBACK -ne '0') {
+                try {
+                    $bScreen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40')
+                    if ($bScreen -and (Test-CtrlKNeeded $bScreen)) { return 'ctrl+k' }
+                } catch { }
+            }
+            return 'approve'
+        }
         if ($env:APPROVE_SCRAPE_FALLBACK -eq '0') { return '' }
-        $screen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','28')
+        $screen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40')
         if (Test-CtrlKNeeded $screen) { return 'ctrl+k' }
         if (Test-PromptVisible $screen) { return 'approve' }
         if (Test-ContinueNeeded $screen) { return 'continue' }
@@ -248,8 +329,15 @@ switch ($Mode) {
         if (-not (Test-Path -LiteralPath $flag) -or -not $env:HERDR_PLUGIN_EVENT_JSON) { return }
         Start-Monitor
         $eventData = ($env:HERDR_PLUGIN_EVENT_JSON | ConvertFrom-Json).data
-        if ($eventData.agent_status -eq 'blocked' -and $eventData.pane_id) {
-            $null = Approve-Pane ([string]$eventData.pane_id) ([string]$eventData.agent) 'blocked'
+        if ($eventData.pane_id) {
+            $paneId = [string]$eventData.pane_id
+            $agentName = [string]$eventData.agent
+            $statusHint = if ($eventData.agent_status -eq 'blocked') { 'blocked' } else { [string]$eventData.agent_status }
+            $res = Approve-Pane $paneId $agentName $statusHint
+            if ($res -eq '-' -and $statusHint -ne 'blocked') {
+                Start-Sleep -Milliseconds 150
+                $null = Approve-Pane $paneId $agentName ''
+            }
         }
     }
     'startup' {

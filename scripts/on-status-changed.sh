@@ -17,13 +17,17 @@ $(printf '%s' "$EVENT" | json_eval \
 print(x.get("agent_status", "?"), x.get("pane_id", "?"), x.get("agent", "unknown"))')
 EOF
 
-[ "$status" = "blocked" ] || exit 0
-[ "$pane" != "?" ] || exit 0
+[ "$pane" != "?" ] && [ -n "$pane" ] || exit 0
 
 # The pane lock keeps this handler, the background monitor, and a manual sweep
 # from driving the same pane at once. Passing "blocked" skips the redundant
-# agent_status() check before sending the first confirm key.
+# agent_status() check before sending the first confirm key; other statuses
+# inspect the visible screen for agy permission menus, ctrl+k, or continue.
 lock=$(pane_lock_path "$pane")
 take_lock "$lock" 15 || exit 0
 trap 'rmdir "$lock" 2>/dev/null || true' EXIT HUP INT TERM
-approve_pane "$pane" "$agent" "blocked" >/dev/null
+res=$(approve_pane "$pane" "$agent" "$status" || printf -- '-')
+if [ "$res" = "-" ] && [ "$status" != "blocked" ]; then
+  sleep 0.15
+  approve_pane "$pane" "$agent" "" >/dev/null || true
+fi

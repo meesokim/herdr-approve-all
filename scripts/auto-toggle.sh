@@ -35,11 +35,18 @@ case "${1:-}" in
       fi
     fi
     printf '%s\n' "$$" > "$PID_FILE"
+    trap '' HUP
     trap '
       if [ -f "$PID_FILE" ] && [ "$(cat "$PID_FILE" 2>/dev/null)" = "$$" ]; then
         rm -f "$PID_FILE" 2>/dev/null || true
       fi
-    ' EXIT HUP INT TERM
+      exit 0
+    ' INT TERM
+    trap '
+      if [ -f "$PID_FILE" ] && [ "$(cat "$PID_FILE" 2>/dev/null)" = "$$" ]; then
+        rm -f "$PID_FILE" 2>/dev/null || true
+      fi
+    ' EXIT
     while [ -f "$FLAG" ]; do
       while read -r pane agent status; do
         [ -f "$FLAG" ] || break

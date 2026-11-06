@@ -30,7 +30,7 @@ try {
     $env:MOCK_HERDR_DIR = $tmp
     $env:APPROVE_AUTO_POLL_SEC = '0.1'
     $env:APPROVE_SETTLE_SEC = '0.01'
-    $env:APPROVE_CONTINUE_COOLDOWN_SEC = '0.05'
+    $env:APPROVE_CONTINUE_COOLDOWN_SEC = '0'
     $env:APPROVE_CMD_TIMEOUT_MS = '10000'
     $mock = @'
 @echo off
@@ -67,16 +67,22 @@ exit /b 0
     if ((Send-Count) -ne 2) { throw 'sweep did not drain stacked prompts' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -First 1).Trim() -ne 'y enter') { throw 'sweep did not send configured keys' }
 
-    # Verify agy sandbox-bypass prompt (no "esc to cancel" footer) is approved while status is working.
+    # Verify agy sandbox-bypass prompt (no "esc to cancel" footer, rendered above composer box) is approved while status is working/idle.
+    $rule = ([string][char]0x2500) * 60
+    $warn = [string][char]0x26a0
+    $unlock = [char]::ConvertFromUtf32(0x1F513)
     $bypassScreen = @"
-Requesting permission for:
-   node "C:\scratch\find_reg_mac_formula.js"
+$unlock Allow sandbox bypass for command execution?
+$warn Confirm the command is safe to run outside of the sandbox with full network and disk access.
 
-Allow sandbox bypass for command execution?
 > 1. Yes, run command
-  2. Yes, and always allow in this conversation
-  3. Yes, and always allow (Persist to settings.json)
+  2. Yes, and always allow in this conversation for commands that start with 'ls'
+  3. Yes, and always allow for commands that start with 'ls' (Persist to settings.json)
   4. No, cancel
+$rule
+>
+$rule
+? for shortcuts                               accept-edits
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $bypassScreen, [Text.Encoding]::UTF8)
     & $script sweep
@@ -94,51 +100,86 @@ Allow access to this file?
     & $script sweep
     if ((Send-Count) -ne 4) { throw 'sweep missed agy outside-workspace file access prompt' }
 
+    # Verify agy file edit acceptance prompt ("Accept this file edit?") is approved while status is working/idle.
+    $fileEditScreen = @"
+Accept this file edit?
+> 1. Yes, accept this change
+  2. No, reject this change
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $fileEditScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 5) { throw 'sweep missed agy file edit acceptance prompt' }
+
     # Verify transient network issue screen submits "continue".
-    $rule = ([string][char]0x2500) * 60
-    $warn = [string][char]0x26a0
     $netErrorScreen = @"
 $warn There was a network issue connecting to the server, please try again.
 Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
 
 $rule
-> 
+>
 $rule
 ? for shortcuts                               accept-edits
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $netErrorScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 5) { throw 'sweep did not submit continue on network error screen' }
+    if ((Send-Count) -ne 6) { throw 'sweep did not submit continue on network error screen' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'prompt:continue') { throw 'sweep did not send continue prompt' }
 
-    # Verify subagent approval banner ("ctrl+k approve · alt+j manage") sends ctrl+k even above an active composer box.
+    # Verify agent executor stream idle timeout / context deadline exceeded error submits "continue".
+    $streamErrorScreen = @"
+$warn agent executor error: generating and executing: stream reading error: stream idle timeout (5m0s): context deadline exceeded
+Error ID: 91998619-beee-4016-9622-358e1320cc2b-1795
+
+$rule
+>
+$rule
+? for shortcuts                               accept-edits
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $streamErrorScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 7) { throw 'sweep did not submit continue on stream idle timeout error screen' }
+    if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'prompt:continue') { throw 'sweep did not send continue prompt on stream error' }
+
+    # Verify subagent approval banner ("ctrl+k approve · alt+j manage") sends ctrl+k in agy's live subagent tray layout
+    # (composer box above the tray, single horizontal border and status footer below).
     $bar = [string][char]0x2503
     $dot = [string][char]0x25cf
     $mid = [string][char]0x00b7
     $subagentScreen = @"
-$bar self needs approval for Bash
+$rule
+>
+$rule
+ $bar research needs approval for Read
  $bar $rule
  $bar
- $bar $dot Bash(git -C /home-mc/CORP/meeso.kim/GMBT-AX/MX_B2B_Orbit_Dev show --stat prototype/ai-discussion-20261105)
+ $bar $dot Read(~/KDH/skills/mcp/server.py)
  $bar
  $bar ctrl+k approve $mid alt+j manage
 $rule
-> 
-$rule
-? for shortcuts                               accept-edits
+? for shortcuts                               accept-edits $mid 1 subagent(s)
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $subagentScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 6) { throw 'sweep did not send ctrl+k on subagent approval screen' }
+    if ((Send-Count) -ne 8) { throw 'sweep did not send ctrl+k on subagent approval screen' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'ctrl+k') { throw 'sweep did not send ctrl+k key' }
 
-    # Verify normal working screen with markdown list + quoted network error + quoted ctrl+k banner + composer box does NOT false-trigger.
+    # Verify normal working screen with markdown list + quoted network/stream error + quoted ctrl+k banner + composer box does NOT false-trigger.
     $workingScreen = @"
   1. First normal markdown list item in scrollback
   2. Second normal markdown list item in scrollback
+  > $unlock Allow sandbox bypass for command execution?
+    > 1. Yes, run command
+      2. Yes, and always allow in this conversation for commands that start with 'ls'
+      3. Yes, and always allow for commands that start with 'ls' (Persist to settings.json)
+      4. No, cancel
+  > Accept this file edit?
+    > 1. Yes, accept this change
+      2. No, reject this change
   > 1. Yes, allow access
   > $warn There was a network issue connecting to the server, please try again.
     Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
+  > $warn agent executor error: generating and executing: stream reading error: stream idle timeout (5m0s): context deadline exceeded
+    Error ID: 91998619-beee-4016-9622-358e1320cc2b-1795
   > $bar self needs approval for Bash
    $bar $rule
    $bar $dot Bash(git status)
@@ -147,13 +188,13 @@ $rule
 Running command...
 
 $rule
-> 
+>
 $rule
 esc to cancel                               accept-edits
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $workingScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 6) { throw 'sweep falsely triggered on normal working screen with scrollback' }
+    if ((Send-Count) -ne 8) { throw 'sweep falsely triggered on normal working screen with scrollback' }
     Remove-Item -LiteralPath (Join-Path $tmp 'fallback_screen.txt') -Force -ErrorAction SilentlyContinue
 
     & $script on
@@ -164,13 +205,13 @@ esc to cancel                               accept-edits
     # No event is dispatched for any of these prompts, including a prompt whose
     # semantic status stays working. The same worker must handle every wave.
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 7 } 'first automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 9 } 'first automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'first prompt did not settle'
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 8 } 'second automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 10 } 'second automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'second prompt did not settle'
     Set-Content (Join-Path $tmp 'fallback') ''
-    Wait-Until { (Send-Count) -ge 9 } 'prompt reported as working was missed'
+    Wait-Until { (Send-Count) -ge 11 } 'prompt reported as working was missed'
     & $script startup
     if ((Read-PidFile $pidFile) -ne $workerPid) { throw 'startup replaced an active monitor' }
     & $script off
