@@ -18,6 +18,8 @@ namespace HerdrApproveAllSetup
         {
             "herdr-plugin.toml",
             "README.md",
+            "scripts/dispatch",
+            "scripts/dispatch.cmd",
             "scripts/approve-windows.ps1",
             "scripts/lib.sh",
             "scripts/approve-blocked.sh",
@@ -290,8 +292,8 @@ namespace HerdrApproveAllSetup
                 File.WriteAllText(flagFile, string.Empty, Encoding.ASCII);
             }
 
-            // Trigger via Herdr CLI
-            RunProcess(herdrExe, "plugin action invoke " + PluginId + ".auto-on-windows", 15000, false);
+            // Trigger unified cross-platform action via Herdr CLI
+            RunProcess(herdrExe, "plugin action invoke " + PluginId + ".auto-on", 15000, false);
 
             // Also invoke the PowerShell script directly so the detached WMI monitor starts immediately
             string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");

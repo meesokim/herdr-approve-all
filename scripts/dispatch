@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Unified cross-platform dispatcher for Linux/macOS (Windows resolves scripts/dispatch.cmd via PATHEXT).
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+case "${1:-}" in
+  sweep|approve-blocked)
+    exec bash "$DIR/approve-blocked.sh"
+    ;;
+  on|off|startup|monitor)
+    exec bash "$DIR/auto-toggle.sh" "$1"
+    ;;
+  event)
+    exec bash "$DIR/on-status-changed.sh"
+    ;;
+  *)
+    echo "usage: dispatch sweep|on|off|startup|monitor|event" >&2
+    exit 1
+    ;;
+esac

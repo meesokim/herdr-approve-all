@@ -7,6 +7,7 @@ FLAG="${HERDR_PLUGIN_CONFIG_DIR:?HERDR_PLUGIN_CONFIG_DIR is required}/auto-appro
 
 case "${1:-}" in
   on)
+    chmod +x "$LIB_DIR/dispatch" 2>/dev/null || true
     mkdir -p "$HERDR_PLUGIN_CONFIG_DIR"
     touch "$FLAG"
     stop_monitor
@@ -19,8 +20,8 @@ case "${1:-}" in
     run_herdr notification show "Auto-approve OFF" --sound none >/dev/null 2>&1 || true
     ;;
   startup)
+    chmod +x "$LIB_DIR/dispatch" 2>/dev/null || true
     if [ -f "$FLAG" ]; then
-      stop_monitor
       start_monitor
     fi
     ;;

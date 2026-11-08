@@ -17,40 +17,40 @@ platforms = ["windows"]
 id = "approve-blocked"
 title = "Approve all blocked agents"
 contexts = ["workspace"]
-command = ["bash", "scripts/approve-blocked.sh"]
-platforms = ["linux", "macos"]
-
-[[actions]]
-id = "approve-blocked-windows"
-title = "Approve all blocked agents"
-contexts = ["workspace"]
-command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "sweep"]
-platforms = ["windows"]
+command = ["scripts/dispatch", "sweep"]
+platforms = ["linux", "macos", "windows"]
 
 [[actions]]
 id = "auto-on"
 title = "Auto-approve: turn ON"
 contexts = ["workspace"]
-command = ["bash", "scripts/auto-toggle.sh", "on"]
-platforms = ["linux", "macos"]
-
-[[actions]]
-id = "auto-on-windows"
-title = "Auto-approve: turn ON"
-contexts = ["workspace"]
-command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "on"]
-platforms = ["windows"]
+command = ["scripts/dispatch", "on"]
+platforms = ["linux", "macos", "windows"]
 
 [[actions]]
 id = "auto-off"
 title = "Auto-approve: turn OFF"
 contexts = ["workspace"]
-command = ["bash", "scripts/auto-toggle.sh", "off"]
-platforms = ["linux", "macos"]
+command = ["scripts/dispatch", "off"]
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "approve-blocked-windows"
+title = "Approve all blocked agents (Windows legacy alias)"
+contexts = ["workspace"]
+command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "sweep"]
+platforms = ["windows"]
+
+[[actions]]
+id = "auto-on-windows"
+title = "Auto-approve: turn ON (Windows legacy alias)"
+contexts = ["workspace"]
+command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "on"]
+platforms = ["windows"]
 
 [[actions]]
 id = "auto-off-windows"
-title = "Auto-approve: turn OFF"
+title = "Auto-approve: turn OFF (Windows legacy alias)"
 contexts = ["workspace"]
 command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "off"]
 platforms = ["windows"]

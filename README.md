@@ -42,35 +42,36 @@ See [Herdr's Windows installation guide](https://herdr.dev/docs/windows-beta/)
 if Herdr is not installed yet. Windows behavior has been verified with Herdr
 `0.9.4-preview.2026-10-14`.
 
-Run the following in PowerShell to install, enable the plugin, and turn on
-automatic approval:
+Run the following in PowerShell or any shell on Windows, Linux, or macOS to
+install, enable the plugin, and turn on automatic approval (the action IDs are
+identical across Windows, Linux, and macOS):
 
 ```powershell
-herdr plugin install meesokim/herdr-approve-all
+herdr plugin install meesokim/herdr-approve-all --yes
 herdr plugin enable renkoya1.approve-all
-herdr plugin action invoke renkoya1.approve-all.auto-on-windows
+herdr plugin action invoke renkoya1.approve-all.auto-on
 ```
 
 Auto mode approves every pending prompt in every agent pane, including requests
 to run destructive commands. Enable it only when you intend to approve all of
 them. The ON toggle persists across Herdr restarts.
 
-To turn automatic approval off:
+To turn automatic approval off (Windows, Linux, macOS):
 
 ```powershell
-herdr plugin action invoke renkoya1.approve-all.auto-off-windows
+herdr plugin action invoke renkoya1.approve-all.auto-off
 ```
 
-For a single manual sweep:
+For a single manual sweep (Windows, Linux, macOS):
 
 ```powershell
-herdr plugin action invoke renkoya1.approve-all.approve-blocked-windows
+herdr plugin action invoke renkoya1.approve-all.approve-blocked
 ```
 
-Windows action IDs end in `-windows`; the unsuffixed actions below are for
-Linux/macOS. Windows sweeps process panes sequentially, prioritizing `blocked`
-(red) panes first. Hold-to-repeat and idle debounce described below apply to
-Unix only.
+Internally, `scripts/dispatch` (Unix) and `scripts/dispatch.cmd` (Windows)
+route each action to the native OS implementation automatically. Legacy
+`-windows` action IDs (`auto-on-windows`, `auto-off-windows`,
+`approve-blocked-windows`) also remain available as aliases on Windows.
 
 ### Windows keybinding
 
@@ -81,7 +82,7 @@ Add this binding to `%APPDATA%\herdr\config.toml` (PowerShell path:
 [[keys.command]]
 key = "prefix+y"
 type = "plugin_action"
-command = "renkoya1.approve-all.approve-blocked-windows"
+command = "renkoya1.approve-all.approve-blocked"
 ```
 
 Then reload the configuration:
