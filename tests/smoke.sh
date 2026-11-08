@@ -112,13 +112,19 @@ EOF
 bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "3" ] || { echo "sweep missed agy sandbox-bypass prompt" >&2; exit 1; }
 
-# Verify agy outside-workspace file access prompt while status is working.
+# Verify agy outside-workspace file access prompt (including composer box and background task tray below) while status is working/idle.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
 Reason: outside workspace
 
 Allow access to this file?
 > 1. Yes, allow access
   2. No, deny access
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+  ● [22:39:07] powershell -NoProfile -ExecutionPolicy Bypass -File test.ps1 running
+────────────────────────────────────────────────────────────
+esc to cancel                               accept-edits · 1 task(s) · /tasks
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "4" ] || { echo "sweep missed agy outside-workspace prompt" >&2; exit 1; }
@@ -191,7 +197,11 @@ cat > "$TMP/fallback_screen.txt" << 'EOF'
   > Accept this file edit?
     > 1. Yes, accept this change
       2. No, reject this change
-  > 1. Yes, allow access
+  > Reason: outside workspace
+
+    Allow access to this file?
+    > 1. Yes, allow access
+      2. No, deny access
   > ⚠ There was a network issue connecting to the server, please try again.
     Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
   > ⚠ agent executor error: generating and executing: stream reading error: stream idle timeout (5m0s): context deadline exceeded

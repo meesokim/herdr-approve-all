@@ -101,8 +101,11 @@ function Test-PromptVisible([string]$Screen) {
     $hasCue = $false
     $hasOpt1 = $false
     $matched = $false
+    $optsDone = $false
+    $inComposer = $false
     $opt1Pattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow|Accept)\b'
     $optNPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:Yes|No|Allow|Deny|Accept|Reject)\b'
+    $optEndPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:No|Deny|Reject)\b'
     $classicLinePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow|Accept)\b).*(?:enter to (?:confirm|select)|esc to cancel)'
     $cuePattern = '(?i)Allow (?:sandbox bypass|access)\b|Accept this file edit\?|Confirm the command is safe|Requesting permission for:|Run this command\?|Reason:\s*outside workspace|Do you want to'
     $footerCuePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:.*(?:Navigate|tab Amend|ctrl\+g|enter to (?:confirm|select))|esc to cancel\s*$)'
@@ -110,19 +113,25 @@ function Test-PromptVisible([string]$Screen) {
         if ($line -match $classicLinePattern) {
             $hasOpt1 = $true
             $matched = $true
+            $optsDone = $true
+            $inComposer = $false
             continue
         }
         if ($line -match $opt1Pattern) {
             $hasOpt1 = $true
+            $optsDone = $false
+            $inComposer = $false
             if ($hasCue) { $matched = $true }
             continue
         }
         if ($hasOpt1 -and $line -match $optNPattern) {
             $matched = $true
+            if ($line -match $optEndPattern) { $optsDone = $true }
             continue
         }
         if ($hasOpt1 -and $line -match $footerCuePattern) {
             $matched = $true
+            $optsDone = $true
             continue
         }
         if ($line -notmatch '^\s*>' -and $line -match $cuePattern) {
@@ -130,19 +139,37 @@ function Test-PromptVisible([string]$Screen) {
             continue
         }
         if ($matched -or $hasOpt1) {
-            if ($line -match '^\s*$' -or $line -match ('^\s*' + $rule + '{10,}\s*$') -or $line -match '^\s*>\s*$') { continue }
-            if ($line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3]' -or $line -match '(?i)^\s*\u25cf\s+Agent\(') { continue }
-            if ($line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel\b.*(?:accept-edits|request-review|auto-approve|subagent\(s\))|\S.*(?:accept-edits|request-review|auto-approve|subagent\(s\)))') { continue }
-            if ($hasOpt1 -and $line -match '^\s{2,}[^\s>]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') {
+            if ($line -match '^\s*$') { continue }
+            if ($line -match ('^\s*' + $rule + '{10,}\s*$')) {
+                if ($matched) { $inComposer = $true }
+                continue
+            }
+            if ($line -match '^\s*>\s*$') { continue }
+            if ($inComposer -and $line -notmatch '^\s*>') {
+                if ($line -match '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') {
+                    $hasCue = $false; $hasOpt1 = $false; $matched = $false; $optsDone = $false; $inComposer = $false
+                }
+                continue
+            }
+            if ($line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3\u25b8\u25cf\u25cb]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') { continue }
+            if ($line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|Press up to edit queued|esc\s+to\s+cancel\b.*(?:accept-edits|request-review|auto-approve|subagent\(s\))|\S.*(?:accept-edits|request-review|auto-approve|subagent\(s\)))') { continue }
+            if ($hasOpt1 -and -not $optsDone -and $line -match '^\s{2,}[^\s>]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') {
                 $matched = $false
                 continue
             }
             $hasCue = $false
             $hasOpt1 = $false
             $matched = $false
+            $optsDone = $false
+            $inComposer = $false
         }
     }
     return $matched
+}
+function Test-FalseBlockedScreen([string]$Screen) {
+    if (-not $Screen) { return $false }
+    $rule = [string][char]0x2500
+    return ($Screen -match ($rule + '{20,}\r?\n\s*>\s*\r?\n' + $rule + '{20,}') -and $Screen -match '(?i)Running command\.\.\.|Reading file\.\.\.|Thinking\.\.\.|Press up to edit queued messages')
 }
 function Test-ContinueNeeded([string]$Screen) {
     if (-not $Screen) { return $false }
@@ -220,10 +247,15 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
             [string](Invoke-Herdr @('agent','get',$Pane) | ConvertFrom-Json).result.agent.agent_status
         }
         if ($status -eq 'blocked') {
-            if ($KnownStatus -eq 'blocked' -and $env:APPROVE_SCRAPE_FALLBACK -ne '0') {
+            if ($env:APPROVE_SCRAPE_FALLBACK -ne '0') {
                 try {
                     $bScreen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40')
-                    if ($bScreen -and (Test-CtrlKNeeded $bScreen)) { return 'ctrl+k' }
+                    if ($bScreen) {
+                        if (Test-CtrlKNeeded $bScreen) { return 'ctrl+k' }
+                        if (Test-PromptVisible $bScreen) { return 'approve' }
+                        if (Test-ContinueNeeded $bScreen) { return 'continue' }
+                        if (Test-FalseBlockedScreen $bScreen) { return '' }
+                    }
                 } catch { }
             }
             return 'approve'

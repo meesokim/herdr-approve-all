@@ -88,13 +88,21 @@ $rule
     & $script sweep
     if ((Send-Count) -ne 3) { throw 'sweep missed agy sandbox-bypass prompt without esc to cancel' }
 
-    # Verify agy outside-workspace file access prompt (no "esc to cancel" footer) is approved while status is working.
+    # Verify agy outside-workspace file access prompt (including composer box and background task tray below) is approved while status is working/idle.
+    $dot = [string][char]0x25cf
+    $mid = [string][char]0x00b7
     $outsideScreen = @"
 Reason: outside workspace
 
 Allow access to this file?
 > 1. Yes, allow access
   2. No, deny access
+$rule
+>
+$rule
+  $dot [22:39:07] powershell -NoProfile -ExecutionPolicy Bypass -File test.ps1 running
+$rule
+esc to cancel                               accept-edits $mid 1 task(s) $mid /tasks
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $outsideScreen, [Text.Encoding]::UTF8)
     & $script sweep
@@ -175,7 +183,11 @@ $rule
   > Accept this file edit?
     > 1. Yes, accept this change
       2. No, reject this change
-  > 1. Yes, allow access
+  > Reason: outside workspace
+
+    Allow access to this file?
+    > 1. Yes, allow access
+      2. No, deny access
   > $warn There was a network issue connecting to the server, please try again.
     Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
   > $warn agent executor error: generating and executing: stream reading error: stream idle timeout (5m0s): context deadline exceeded

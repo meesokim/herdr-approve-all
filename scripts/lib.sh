@@ -114,23 +114,29 @@ agent_status() {
 screen_has_prompt() {
   [ -n "${1:-}" ] || return 1
   printf '%s\n' "$1" | tr -d '\r' | awk '
-    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0 }
+    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0; opts_done = 0; in_box = 0 }
     /^[[:space:]]*(┃|│|\|)?[[:space:]]*((❯|>)[[:space:]]*[0-9]+\.[[:space:]]+|1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)).*([Ee]nter to (confirm|select)|[Ee]sc to cancel)/ {
       has_opt1 = 1
       matched = 1
+      opts_done = 1
+      in_box = 0
       next
     }
     /^[[:space:]]*(┃|│|\|)?[[:space:]]*(❯|>)[[:space:]]*1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)/ {
       has_opt1 = 1
+      opts_done = 0
+      in_box = 0
       if (has_cue) matched = 1
       next
     }
     has_opt1 && /^[[:space:]]*(┃|│|\|)?[[:space:]]*[2-9]\.[[:space:]]+([Yy]es|[Nn]o|[Aa]llow|[Dd]eny|[Aa]ccept|[Rr]eject)([[:space:],-]|$)/ {
       matched = 1
+      if (/^[[:space:]]*(┃|│|\|)?[[:space:]]*[2-9]\.[[:space:]]+([Nn]o|[Dd]eny|[Rr]eject)([[:space:],-]|$)/) opts_done = 1
       next
     }
     has_opt1 && /^[[:space:]]*(┃|│|\|)?[[:space:]]*(.*([Nn]avigate|tab [Aa]mend|ctrl\+g|[Ee]nter to (confirm|select))|[Ee]sc to cancel[[:space:]]*$)/ {
       matched = 1
+      opts_done = 1
       next
     }
     !/^[[:space:]]*>/ && /([Aa]llow (sandbox bypass|access)|[Aa]ccept this file edit\?|[Cc]onfirm the command is safe|[Rr]equesting permission for:|[Rr]un this command\?|[Rr]eason:[[:space:]]*outside workspace|[Dd]o you want to)/ {
@@ -138,18 +144,43 @@ screen_has_prompt() {
       next
     }
     matched || has_opt1 {
-      if (/^[[:space:]]*$/ || index($0, rule) > 0 || /^[[:space:]]*>[[:space:]]*$/) next
-      if (/^[[:space:]]*(┃|│|\||└|├|↳|●[[:space:]]+Agent\()/) next
-      if (/^[[:space:]]*\?[[:space:]]+for[[:space:]]+shortcuts/ || /(accept-edits|request-review|auto-approve|subagent\(s\))/) next
-      if (has_opt1 && /^[[:space:]][[:space:]]+[^[:space:]>]/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) {
+      if (/^[[:space:]]*$/) next
+      if (index($0, rule) > 0) {
+        if (matched) in_box = 1
+        next
+      }
+      if (/^[[:space:]]*>[[:space:]]*$/) next
+      if (in_box && !/^[[:space:]]*>/) {
+        if (/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) {
+          has_cue = 0; has_opt1 = 0; matched = 0; opts_done = 0; in_box = 0
+        }
+        next
+      }
+      if (/^[[:space:]]*(┃|│|\||└|├|↳|▸|●|○)/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) next
+      if (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Pp]ress up to edit queued)/ || /(accept-edits|request-review|auto-approve|subagent\(s\))/) next
+      if (has_opt1 && !opts_done && /^[[:space:]][[:space:]]+[^[:space:]>]/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) {
         matched = 0
         next
       }
       has_cue = 0
       has_opt1 = 0
       matched = 0
+      opts_done = 0
+      in_box = 0
     }
     END { exit (matched ? 0 : 1) }
+  '
+}
+
+screen_is_false_blocked() {
+  [ -n "${1:-}" ] || return 1
+  printf '%s\n' "$1" | tr -d '\r' | awk '
+    BEGIN { rule = "────────────────────"; box = 0; busy = 0 }
+    /([Rr]unning command\.\.\.|[Rr]eading file\.\.\.|[Tt]hinking\.\.\.|[Pp]ress up to edit queued messages)/ { busy = 1 }
+    box == 0 && index($0, rule) > 0 { box = 1; next }
+    box == 1 && /^[[:space:]]*>[[:space:]]*$/ { box = 2; next }
+    box == 2 && index($0, rule) > 0 { box = 3; next }
+    END { exit (busy && box == 3 ? 0 : 1) }
   '
 }
 
@@ -233,11 +264,24 @@ pane_action() {
     status=$(agent_status "$pane")
   fi
   if [ "$status" = "blocked" ]; then
-    if [ "${2:-}" = "blocked" ] && [ "$APPROVE_SCRAPE_FALLBACK" = "1" ]; then
+    if [ "$APPROVE_SCRAPE_FALLBACK" = "1" ]; then
       out=$(run_herdr agent read "$pane" --source visible --lines 40 2>/dev/null || true)
-      if [ -n "$out" ] && screen_needs_ctrl_k "$out"; then
-        printf 'ctrl+k'
-        return 0
+      if [ -n "$out" ]; then
+        if screen_needs_ctrl_k "$out"; then
+          printf 'ctrl+k'
+          return 0
+        fi
+        if screen_has_prompt "$out"; then
+          printf 'approve'
+          return 0
+        fi
+        if screen_needs_continue "$out"; then
+          printf 'continue'
+          return 0
+        fi
+        if screen_is_false_blocked "$out"; then
+          return 1
+        fi
       fi
     fi
     printf 'approve'
