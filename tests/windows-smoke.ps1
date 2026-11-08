@@ -108,11 +108,15 @@ esc to cancel                               accept-edits $mid 1 task(s) $mid /ta
     & $script sweep
     if ((Send-Count) -ne 4) { throw 'sweep missed agy outside-workspace file access prompt' }
 
-    # Verify agy file edit acceptance prompt ("Accept this file edit?") is approved while status is working/idle.
+    # Verify agy file edit acceptance prompt ("Accept this file edit?") with non-accept-edits footer ("esc to cancel ... Gemini 4 Argon · medium") is approved while status is working/idle/done.
     $fileEditScreen = @"
+  shift+tab to auto-approve file edits
 Accept this file edit?
 > 1. Yes, accept this change
   2. No, reject this change
+
+  Navigate $mid f full diff
+esc to cancel                                                                                                                                     Gemini 4 Argon $mid medium
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $fileEditScreen, [Text.Encoding]::UTF8)
     & $script sweep

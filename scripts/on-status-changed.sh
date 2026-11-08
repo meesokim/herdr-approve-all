@@ -12,9 +12,9 @@ EVENT="${HERDR_PLUGIN_EVENT_JSON:-}"
 
 read -r status pane agent << EOF
 $(printf '%s' "$EVENT" | json_eval \
-  '.data | "\(.agent_status) \(.pane_id) \(.agent // "unknown")"' \
+  '.data | "\(if (.agent_status // "") == "" then "?" else .agent_status end) \(if (.pane_id // "") == "" then "?" else .pane_id end) \(if (.agent // "") == "" then "unknown" else .agent end)"' \
   'x = d.get("data", {})
-print(x.get("agent_status", "?"), x.get("pane_id", "?"), x.get("agent", "unknown"))')
+print(x.get("agent_status") or "?", x.get("pane_id") or "?", x.get("agent") or "unknown")')
 EOF
 
 [ "$pane" != "?" ] && [ -n "$pane" ] || exit 0

@@ -129,11 +129,15 @@ EOF
 bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "4" ] || { echo "sweep missed agy outside-workspace prompt" >&2; exit 1; }
 
-# Verify agy file edit acceptance prompt ("Accept this file edit?") while status is working/idle.
+# Verify agy file edit acceptance prompt ("Accept this file edit?") with non-accept-edits footer ("esc to cancel ... Gemini 4 Argon · medium") while status is working/idle/done.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
+  shift+tab to auto-approve file edits
 Accept this file edit?
 > 1. Yes, accept this change
   2. No, reject this change
+
+  ↑/↓ Navigate · f full diff
+esc to cancel                                                                                                                                     Gemini 4 Argon · medium
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "5" ] || { echo "sweep missed agy file edit acceptance prompt" >&2; exit 1; }

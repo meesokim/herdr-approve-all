@@ -9,6 +9,7 @@ case "${1:-}" in
   on)
     mkdir -p "$HERDR_PLUGIN_CONFIG_DIR"
     touch "$FLAG"
+    stop_monitor
     start_monitor
     run_herdr notification show "Auto-approve ON" --body "Every waiting agent prompt is approved automatically." --sound none >/dev/null 2>&1 || true
     ;;
@@ -19,6 +20,7 @@ case "${1:-}" in
     ;;
   startup)
     if [ -f "$FLAG" ]; then
+      stop_monitor
       start_monitor
     fi
     ;;

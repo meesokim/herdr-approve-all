@@ -107,7 +107,7 @@ function Test-PromptVisible([string]$Screen) {
     $optNPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:Yes|No|Allow|Deny|Accept|Reject)\b'
     $optEndPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:No|Deny|Reject)\b'
     $classicLinePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow|Accept)\b).*(?:enter to (?:confirm|select)|esc to cancel)'
-    $cuePattern = '(?i)Allow (?:sandbox bypass|access)\b|Accept this file edit\?|Confirm the command is safe|Requesting permission for:|Run this command\?|Reason:\s*outside workspace|Do you want to'
+    $cuePattern = '(?i)Allow (?:sandbox bypass|access|calling|creation|administrator|remote)\b|Accept this file edit\?|Confirm the command is safe|Requesting permission for:|Run this command\?|Reason:\s*outside workspace|Do you want to'
     $footerCuePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:.*(?:Navigate|tab Amend|ctrl\+g|enter to (?:confirm|select))|esc to cancel\s*$)'
     foreach ($line in ($Screen -split "\r?\n")) {
         if ($line -match $classicLinePattern) {
@@ -152,7 +152,7 @@ function Test-PromptVisible([string]$Screen) {
                 continue
             }
             if ($line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3\u25b8\u25cf\u25cb]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') { continue }
-            if ($line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|Press up to edit queued|esc\s+to\s+cancel\b.*(?:accept-edits|request-review|auto-approve|subagent\(s\))|\S.*(?:accept-edits|request-review|auto-approve|subagent\(s\)))') { continue }
+            if ($line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|Press up to edit queued|esc\s+to\s+cancel\b|\S.*(?:accept-edits|request-review|auto-approve|always-proceed|subagent\(s\)|task\(s\)\s*.*\s*/tasks))') { continue }
             if ($hasOpt1 -and -not $optsDone -and $line -match '^\s{2,}[^\s>]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') {
                 $matched = $false
                 continue

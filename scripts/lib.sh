@@ -45,7 +45,7 @@ $2"
 # (red) panes first, working (green) panes second, and all others third.
 list_sorted_agents() {
   run_herdr agent list 2>/dev/null | json_eval \
-    '(.result.agents // []) | sort_by(if .agent_status == "blocked" then 0 elif .agent_status == "working" then 1 else 2 end) | .[] | "\(.pane_id) \(.agent // "unknown") \(.agent_status // "")"' \
+    '(.result.agents // []) | sort_by(if .agent_status == "blocked" then 0 elif .agent_status == "working" then 1 else 2 end) | .[] | "\(.pane_id) \(if (.agent // "") == "" then "unknown" else .agent end) \(.agent_status // "")"' \
     'order = {"blocked": 0, "working": 1}
 for a in sorted(d.get("result", {}).get("agents") or [], key=lambda x: order.get(x.get("agent_status", ""), 2)):
     print(a.get("pane_id", ""), a.get("agent") or "unknown", a.get("agent_status") or "")'
@@ -69,7 +69,12 @@ keys_for() {
 }
 
 file_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s
+  local out
+  out=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)
+  case "$out" in
+    ''|*[!0-9]*) date +%s ;;
+    *) printf '%s\n' "$out" ;;
+  esac
 }
 
 # take_lock <dir> <max_age_seconds>: mkdir-based mutex. A lock older than
@@ -139,7 +144,7 @@ screen_has_prompt() {
       opts_done = 1
       next
     }
-    !/^[[:space:]]*>/ && /([Aa]llow (sandbox bypass|access)|[Aa]ccept this file edit\?|[Cc]onfirm the command is safe|[Rr]equesting permission for:|[Rr]un this command\?|[Rr]eason:[[:space:]]*outside workspace|[Dd]o you want to)/ {
+    !/^[[:space:]]*>/ && /([Aa]llow (sandbox bypass|access|calling|creation|administrator|remote)|[Aa]ccept this file edit\?|[Cc]onfirm the command is safe|[Rr]equesting permission for:|[Rr]un this command\?|[Rr]eason:[[:space:]]*outside workspace|[Dd]o you want to)/ {
       has_cue = 1
       next
     }
@@ -157,7 +162,7 @@ screen_has_prompt() {
         next
       }
       if (/^[[:space:]]*(┃|│|\||└|├|↳|▸|●|○)/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) next
-      if (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Pp]ress up to edit queued)/ || /(accept-edits|request-review|auto-approve|subagent\(s\))/) next
+      if (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Ee]sc[[:space:]]+to[[:space:]]+cancel|[Pp]ress up to edit queued)/ || /(accept-edits|request-review|auto-approve|always-proceed|subagent\(s\)|task\(s\)[[:space:]]*·[[:space:]]*\/tasks)/) next
       if (has_opt1 && !opts_done && /^[[:space:]][[:space:]]+[^[:space:]>]/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) {
         matched = 0
         next
