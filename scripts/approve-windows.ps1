@@ -74,6 +74,31 @@ function Test-MonitorRunning {
         return (-not $locked)
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
 }
+function Stop-Monitor {
+    $pidFile = Join-Path $state 'monitor.pid'
+    if (Test-Path -LiteralPath $pidFile) {
+        try {
+            $raw = (Get-Content -LiteralPath $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+            $parsedPid = 0
+            if ([int]::TryParse($raw, [ref]$parsedPid) -and $parsedPid -gt 0 -and $parsedPid -ne $PID) {
+                $proc = Get-Process -Id $parsedPid -ErrorAction SilentlyContinue
+                if ($proc -and $proc.ProcessName -match 'powershell') {
+                    Stop-Process -Id $parsedPid -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch { }
+        Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $env:MOCK_HERDR_DIR) {
+        try {
+            $orphans = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'approve-windows\.ps1.*monitor' }
+            foreach ($o in $orphans) {
+                Stop-Process -Id $o.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        } catch { }
+    }
+}
 function Start-Monitor {
     # Probe the same mutex as the worker, rather than trusting a reusable PID.
     if (Test-MonitorRunning) { return }
@@ -346,11 +371,13 @@ switch ($Mode) {
     'on' {
         $null = New-Item -ItemType Directory -Path $config -Force
         $null = New-Item -ItemType File -Path $flag -Force
+        Stop-Monitor
         Start-Monitor
         Notify 'Auto-approve ON'
     }
     'off' {
         Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue
+        Stop-Monitor
         Notify 'Auto-approve OFF'
     }
     'event' {
@@ -384,7 +411,7 @@ switch ($Mode) {
             $locked = Lock-Mutex $mutex 10000
             if (-not $locked) { return }
             $null = New-Item -ItemType Directory -Path $state -Force
-            Set-Content -LiteralPath $pidFile -Value $PID -Encoding ASCII
+            Set-Content -LiteralPath $pidFile -Value $PID -Encoding ASCII -ErrorAction SilentlyContinue
             $idleCache = @{}
             $tick = 0
             while (Test-Path -LiteralPath $flag) {
@@ -411,12 +438,12 @@ switch ($Mode) {
                         $result = Approve-Pane $paneId ([string]$agent.agent) $status
                         if ($result -eq '1' -or $result -eq '0') {
                             $null = $idleCache.Remove($paneId)
-                            Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) pane=$paneId result=$result"
+                            try { Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) pane=$paneId result=$result" -ErrorAction SilentlyContinue } catch { }
                         }
                     }
                 } catch {
                     # Herdr may be restarting. Keep the persisted toggle and retry.
-                    Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $_"
+                    try { Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $_" -ErrorAction SilentlyContinue } catch { }
                 }
                 Start-Sleep -Milliseconds ([Math]::Max(80, [int](1000 * (Number-Setting 'APPROVE_AUTO_POLL_SEC' 0.15))))
             }

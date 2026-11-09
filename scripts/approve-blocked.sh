@@ -45,6 +45,7 @@ sweep_once() {
   local n=0 f pane agent status _rest
   while read -r pane agent status _rest; do
     [ -n "$pane" ] || continue
+    [ "${status:-}" = "?" ] && status=""
     n=$((n + 1))
     (
       lock=$(pane_lock_path "$pane")

@@ -60,6 +60,7 @@ case "${1:-}" in
       while read -r pane agent status focused state_key; do
         [ -f "$FLAG" ] || break
         [ -n "$pane" ] || continue
+        [ "${status:-}" = "?" ] && status=""
         if { [ "${status:-}" = "idle" ] || [ "${status:-}" = "done" ]; } && [ "${focused:-false}" != "true" ]; then
           cache_entry="$pane=${state_key:-}"
           case "

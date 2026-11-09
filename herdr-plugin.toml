@@ -6,12 +6,8 @@ description = "Approve every blocked agent at once: sends Enter to all waiting p
 platforms = ["linux", "macos", "windows"]
 
 [[startup]]
-command = ["bash", "scripts/auto-toggle.sh", "startup"]
-platforms = ["linux", "macos"]
-
-[[startup]]
-command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "startup"]
-platforms = ["windows"]
+command = ["scripts/dispatch", "startup"]
+platforms = ["linux", "macos", "windows"]
 
 [[actions]]
 id = "approve-blocked"
@@ -38,29 +34,24 @@ platforms = ["linux", "macos", "windows"]
 id = "approve-blocked-windows"
 title = "Approve all blocked agents (Windows legacy alias)"
 contexts = ["workspace"]
-command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "sweep"]
+command = ["scripts/dispatch", "sweep"]
 platforms = ["windows"]
 
 [[actions]]
 id = "auto-on-windows"
 title = "Auto-approve: turn ON (Windows legacy alias)"
 contexts = ["workspace"]
-command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "on"]
+command = ["scripts/dispatch", "on"]
 platforms = ["windows"]
 
 [[actions]]
 id = "auto-off-windows"
 title = "Auto-approve: turn OFF (Windows legacy alias)"
 contexts = ["workspace"]
-command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "off"]
+command = ["scripts/dispatch", "off"]
 platforms = ["windows"]
 
 [[events]]
 on = "pane.agent_status_changed"
-command = ["bash", "scripts/on-status-changed.sh"]
-platforms = ["linux", "macos"]
-
-[[events]]
-on = "pane.agent_status_changed"
-command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/approve-windows.ps1", "event"]
-platforms = ["windows"]
+command = ["scripts/dispatch", "event"]
+platforms = ["linux", "macos", "windows"]

@@ -41,11 +41,11 @@ $2"
   fi
 }
 
-# list_sorted_agents: prints "<pane_id> <agent> <agent_status> <focused> <state_key>"
+# list_sorted_agents: prints "<pane_id> <agent> <agent_status_or_q> <focused> <state_key>"
 # with blocked (red) panes first, focused+working second, working third, focused fourth, and others fifth.
 list_sorted_agents() {
   run_herdr agent list 2>/dev/null | json_eval \
-    '(.result.agents // []) | sort_by(if .agent_status == "blocked" then 0 elif (.agent_status == "working" and .focused == true) then 1 elif .agent_status == "working" then 2 elif .focused == true then 3 else 4 end) | .[] | "\(.pane_id) \(if (.agent // "") == "" then "unknown" else .agent end) \(.agent_status // "") \(.focused // false) \(.agent_status // ""):\(.state_change_seq // 0):\(.revision // 0)"' \
+    '(.result.agents // []) | sort_by(if .agent_status == "blocked" then 0 elif (.agent_status == "working" and .focused == true) then 1 elif .agent_status == "working" then 2 elif .focused == true then 3 else 4 end) | .[] | "\(.pane_id) \(if (.agent // "") == "" then "unknown" else .agent end) \(if (.agent_status // "") == "" then "?" else .agent_status end) \(.focused // false) \(.agent_status // "?"):\(.state_change_seq // 0):\(.revision // 0)"' \
     'def rank(x):
     st = x.get("agent_status", "")
     foc = bool(x.get("focused", False))
@@ -55,7 +55,7 @@ list_sorted_agents() {
     if foc: return 3
     return 4
 for a in sorted(d.get("result", {}).get("agents") or [], key=rank):
-    st = a.get("agent_status") or ""
+    st = a.get("agent_status") or "?"
     foc = "true" if a.get("focused") else "false"
     sk = f"{st}:{a.get(\"state_change_seq\", 0)}:{a.get(\"revision\", 0)}"
     print(a.get("pane_id", ""), a.get("agent") or "unknown", st, foc, sk)'

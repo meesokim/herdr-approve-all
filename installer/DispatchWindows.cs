@@ -14,6 +14,12 @@ internal static class Program
 
         string mode = args[0];
         string configDir = Environment.GetEnvironmentVariable("HERDR_PLUGIN_CONFIG_DIR");
+        string stateDir = Environment.GetEnvironmentVariable("HERDR_PLUGIN_STATE_DIR");
+        if (string.IsNullOrEmpty(stateDir) && !string.IsNullOrEmpty(configDir))
+        {
+            stateDir = Path.Combine(configDir, "state");
+        }
+
         if ((string.Equals(mode, "event", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(mode, "startup", StringComparison.OrdinalIgnoreCase)) &&
             !string.IsNullOrEmpty(configDir))
@@ -22,6 +28,20 @@ internal static class Program
             if (!File.Exists(flagFile))
             {
                 return 0;
+            }
+
+            if (string.Equals(mode, "startup", StringComparison.OrdinalIgnoreCase) && IsMonitorAlive(stateDir))
+            {
+                return 0;
+            }
+
+            if (string.Equals(mode, "event", StringComparison.OrdinalIgnoreCase))
+            {
+                string eventJson = Environment.GetEnvironmentVariable("HERDR_PLUGIN_EVENT_JSON") ?? string.Empty;
+                if (eventJson.IndexOf("\"blocked\"", StringComparison.OrdinalIgnoreCase) < 0 && IsMonitorAlive(stateDir))
+                {
+                    return 0;
+                }
             }
         }
 
@@ -62,5 +82,30 @@ internal static class Program
             proc.WaitForExit();
             return proc.ExitCode;
         }
+    }
+
+    private static bool IsMonitorAlive(string stateDir)
+    {
+        if (string.IsNullOrEmpty(stateDir))
+        {
+            return false;
+        }
+        string pidFile = Path.Combine(stateDir, "monitor.pid");
+        if (!File.Exists(pidFile))
+        {
+            return false;
+        }
+        try
+        {
+            string raw = File.ReadAllText(pidFile).Trim();
+            int pid;
+            if (int.TryParse(raw, out pid) && pid > 0)
+            {
+                Process proc = Process.GetProcessById(pid);
+                return !proc.HasExited;
+            }
+        }
+        catch { }
+        return false;
     }
 }

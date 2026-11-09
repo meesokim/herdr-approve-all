@@ -187,27 +187,30 @@ namespace HerdrApproveAllSetup
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "herdr", "plugins", PluginId, "monitor.pid"
             );
-            if (!File.Exists(pidFile)) return;
-            try
+            if (File.Exists(pidFile))
             {
-                string raw = File.ReadAllText(pidFile).Trim();
-                int pid;
-                if (int.TryParse(raw, out pid) && pid > 0)
+                try
                 {
-                    try
+                    string raw = File.ReadAllText(pidFile).Trim();
+                    int pid;
+                    if (int.TryParse(raw, out pid) && pid > 0)
                     {
-                        Process proc = Process.GetProcessById(pid);
-                        if (proc.ProcessName.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0)
+                        try
                         {
-                            proc.Kill();
-                            proc.WaitForExit(2000);
+                            Process proc = Process.GetProcessById(pid);
+                            if (proc.ProcessName.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                proc.Kill();
+                                proc.WaitForExit(2000);
+                            }
                         }
+                        catch { }
                     }
-                    catch { }
+                    File.Delete(pidFile);
                 }
-                File.Delete(pidFile);
+                catch { }
             }
-            catch { }
+            RunProcess("wmic.exe", "process where \"name='powershell.exe' and commandline like '%approve-windows.ps1%monitor%'\" call terminate", 10000, false);
         }
 
         private static void ExtractEmbeddedPluginFiles(string targetPluginDir)
