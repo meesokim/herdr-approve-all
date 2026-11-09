@@ -20,6 +20,7 @@ namespace HerdrApproveAllSetup
             "README.md",
             "scripts/dispatch",
             "scripts/dispatch.cmd",
+            "scripts/dispatch.exe",
             "scripts/approve-windows.ps1",
             "scripts/lib.sh",
             "scripts/approve-blocked.sh",
@@ -292,37 +293,64 @@ namespace HerdrApproveAllSetup
                 File.WriteAllText(flagFile, string.Empty, Encoding.ASCII);
             }
 
-            // Trigger unified cross-platform action via Herdr CLI
+            // Trigger unified cross-platform action via Herdr CLI (runs inside the Herdr daemon process)
             RunProcess(herdrExe, "plugin action invoke " + PluginId + ".auto-on", 15000, false);
 
-            // Also invoke the PowerShell script directly so the detached WMI monitor starts immediately
-            string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
-            string scriptPath = Path.Combine(targetPluginDir, "scripts", "approve-windows.ps1");
-            if (File.Exists(scriptPath))
+            string pidFile = Path.Combine(stateDir, "monitor.pid");
+            string activePid = WaitForMonitorPid(pidFile, 16);
+
+            if (string.IsNullOrEmpty(activePid))
             {
-                string args = "-NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\" on" +
-                              " -ConfigDir \"" + configDir + "\"" +
-                              " -StateDir \"" + stateDir + "\"" +
-                              " -HerdrBin \"" + herdrExe + "\"";
-                RunProcess(psExe, args, 15000, false);
+                // Fallback when Herdr daemon is not currently running: invoke PowerShell directly
+                string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
+                string scriptPath = Path.Combine(targetPluginDir, "scripts", "approve-windows.ps1");
+                if (File.Exists(scriptPath))
+                {
+                    string args = "-NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\" on" +
+                                  " -ConfigDir \"" + configDir + "\"" +
+                                  " -StateDir \"" + stateDir + "\"" +
+                                  " -HerdrBin \"" + herdrExe + "\"";
+                    RunProcess(psExe, args, 15000, false);
+                }
+                activePid = WaitForMonitorPid(pidFile, 20);
             }
 
-            string pidFile = Path.Combine(stateDir, "monitor.pid");
-            for (int i = 0; i < 20; i++)
+            if (!string.IsNullOrEmpty(activePid))
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("[OK] Auto-approve monitor is active (PID: " + activePid + ")");
+                Console.ResetColor();
+            }
+        }
+
+        private static string WaitForMonitorPid(string pidFile, int attempts)
+        {
+            for (int i = 0; i < attempts; i++)
             {
                 if (File.Exists(pidFile))
                 {
-                    string pidText = File.ReadAllText(pidFile).Trim();
-                    if (!string.IsNullOrEmpty(pidText))
+                    try
                     {
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("[OK] Auto-approve monitor is active (PID: " + pidText + ")");
-                        Console.ResetColor();
-                        break;
+                        string pidText = File.ReadAllText(pidFile).Trim();
+                        int pid;
+                        if (int.TryParse(pidText, out pid) && pid > 0)
+                        {
+                            try
+                            {
+                                Process proc = Process.GetProcessById(pid);
+                                if (!proc.HasExited)
+                                {
+                                    return pidText;
+                                }
+                            }
+                            catch { }
+                        }
                     }
+                    catch { }
                 }
                 Thread.Sleep(150);
             }
+            return null;
         }
 
         private static void DownloadFile(string url, string destinationPath)

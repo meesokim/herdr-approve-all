@@ -95,14 +95,16 @@ bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "2" ] || { echo "sweep did not drain stacked prompts" >&2; exit 1; }
 [ "$(head -n 1 "$TMP/sent")" = "y enter" ] || { echo "sweep did not send configured keys" >&2; exit 1; }
 
-# Verify agy sandbox-bypass prompt (no "esc to cancel" footer, rendered above composer box) while status is working/idle.
+# Verify agy sandbox-bypass prompt (no "esc to cancel" footer, rendered above composer box, including column-0 wrapped options in narrow split panes) while status is working/idle.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
 🔓 Allow sandbox bypass for command execution?
 ⚠️ Confirm the command is safe to run outside of the sandbox with full network and disk access.
 
 > 1. Yes, run command
-  2. Yes, and always allow in this conversation for commands that start with 'ls'
-  3. Yes, and always allow for commands that start with 'ls' (Persist to settings.json)
+  2. Yes, and always allow in this conversation for commands that start with
+'powershell.exe -NoProfile'
+  3. Yes, and always allow for commands that start with 'powershell.exe'
+(Persist to settings.json)
   4. No, cancel
 ────────────────────────────────────────────────────────────
 >
@@ -111,6 +113,14 @@ cat > "$TMP/fallback_screen.txt" << 'EOF'
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "3" ] || { echo "sweep missed agy sandbox-bypass prompt" >&2; exit 1; }
+
+# Verify agy minimal "Run this command?\n> 1. Yes, run command" prompt (without Options 2-4 visible) while status is working/idle.
+cat > "$TMP/fallback_screen.txt" << 'EOF'
+Run this command?
+> 1. Yes, run command
+EOF
+bash "$ROOT/scripts/approve-blocked.sh"
+[ "$(send_count)" = "4" ] || { echo "sweep missed minimal Run this command? prompt" >&2; exit 1; }
 
 # Verify agy outside-workspace file access prompt (including composer box and background task tray below) while status is working/idle.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
@@ -127,7 +137,7 @@ Allow access to this file?
 esc to cancel                               accept-edits · 1 task(s) · /tasks
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "4" ] || { echo "sweep missed agy outside-workspace prompt" >&2; exit 1; }
+[ "$(send_count)" = "5" ] || { echo "sweep missed agy outside-workspace prompt" >&2; exit 1; }
 
 # Verify agy file edit acceptance prompt ("Accept this file edit?") with non-accept-edits footer ("esc to cancel ... Gemini 4 Argon · medium") while status is working/idle/done.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
@@ -140,7 +150,7 @@ Accept this file edit?
 esc to cancel                                                                                                                                     Gemini 4 Argon · medium
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "5" ] || { echo "sweep missed agy file edit acceptance prompt" >&2; exit 1; }
+[ "$(send_count)" = "6" ] || { echo "sweep missed agy file edit acceptance prompt" >&2; exit 1; }
 
 # Verify transient network issue screen submits "continue".
 cat > "$TMP/fallback_screen.txt" << 'EOF'
@@ -153,7 +163,7 @@ Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
 ? for shortcuts                               accept-edits
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "6" ] || { echo "sweep did not submit continue on network error screen" >&2; exit 1; }
+[ "$(send_count)" = "7" ] || { echo "sweep did not submit continue on network error screen" >&2; exit 1; }
 [ "$(tail -n 1 "$TMP/sent")" = "prompt:continue" ] || { echo "sweep did not send continue prompt" >&2; exit 1; }
 
 # Verify agent executor stream idle timeout / context deadline exceeded error submits "continue".
@@ -167,7 +177,7 @@ Error ID: 91998619-beee-4016-9622-358e1320cc2b-1795
 ? for shortcuts                               accept-edits
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "7" ] || { echo "sweep did not submit continue on stream idle timeout error screen" >&2; exit 1; }
+[ "$(send_count)" = "8" ] || { echo "sweep did not submit continue on stream idle timeout error screen" >&2; exit 1; }
 [ "$(tail -n 1 "$TMP/sent")" = "prompt:continue" ] || { echo "sweep did not send continue prompt on stream error" >&2; exit 1; }
 
 # Verify subagent approval banner ("ctrl+k approve · alt+j manage") sends ctrl+k in agy's live subagent tray layout
@@ -186,7 +196,7 @@ cat > "$TMP/fallback_screen.txt" << 'EOF'
 ? for shortcuts                               accept-edits · 1 subagent(s)
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "8" ] || { echo "sweep did not send ctrl+k on subagent approval screen" >&2; exit 1; }
+[ "$(send_count)" = "9" ] || { echo "sweep did not send ctrl+k on subagent approval screen" >&2; exit 1; }
 [ "$(tail -n 1 "$TMP/sent")" = "ctrl+k" ] || { echo "sweep did not send ctrl+k key" >&2; exit 1; }
 
 # Verify normal working screen with markdown list + quoted network/stream error + quoted ctrl+k banner + composer box does NOT false-trigger.
@@ -198,6 +208,8 @@ cat > "$TMP/fallback_screen.txt" << 'EOF'
       2. Yes, and always allow in this conversation for commands that start with 'ls'
       3. Yes, and always allow for commands that start with 'ls' (Persist to settings.json)
       4. No, cancel
+  > Run this command?
+    > 1. Yes, run command
   > Accept this file edit?
     > 1. Yes, accept this change
       2. No, reject this change
@@ -223,7 +235,7 @@ Running command...
 esc to cancel                               accept-edits
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "8" ] || { echo "sweep falsely triggered on normal working screen" >&2; exit 1; }
+[ "$(send_count)" = "9" ] || { echo "sweep falsely triggered on normal working screen" >&2; exit 1; }
 rm -f "$TMP/fallback_screen.txt"
 
 # Verify background monitor in auto mode handles blocked and working prompts without events.
@@ -233,11 +245,11 @@ wait_until '[ -f "$TMP/state/monitor.pid" ]' 'monitor did not start'
 WORKER_PID="$(cat "$TMP/state/monitor.pid")"
 
 : > "$TMP/pending"
-wait_until '[ "$(send_count)" -ge 9 ]' 'first automatic prompt was missed'
+wait_until '[ "$(send_count)" -ge 10 ]' 'first automatic prompt was missed'
 wait_until '[ ! -f "$TMP/pending" ]' 'first prompt did not settle'
 
 : > "$TMP/fallback"
-wait_until '[ "$(send_count)" -ge 10 ]' 'prompt reported as working was missed'
+wait_until '[ "$(send_count)" -ge 11 ]' 'prompt reported as working was missed'
 
 bash "$ROOT/scripts/auto-toggle.sh" off
 [ ! -f "$TMP/auto-approve" ] || { echo "off did not remove flag" >&2; exit 1; }

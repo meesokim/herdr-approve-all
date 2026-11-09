@@ -6,9 +6,9 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Tunables (env-overridable, mainly so the stub test can shrink the waits).
 APPROVE_MAX_SENDS="${APPROVE_MAX_SENDS:-5}"       # confirm keys per pane, per run
 APPROVE_LEAVE_TIMEOUT_MS="${APPROVE_LEAVE_TIMEOUT_MS:-1200}"
-APPROVE_SETTLE_SEC="${APPROVE_SETTLE_SEC:-0.2}"   # let a queued prompt or TUI redraw paint
+APPROVE_SETTLE_SEC="${APPROVE_SETTLE_SEC:-0.12}"  # let a queued prompt or TUI redraw paint
 APPROVE_SCRAPE_FALLBACK="${APPROVE_SCRAPE_FALLBACK:-1}"
-APPROVE_AUTO_POLL_SEC="${APPROVE_AUTO_POLL_SEC:-0.3}"
+APPROVE_AUTO_POLL_SEC="${APPROVE_AUTO_POLL_SEC:-0.15}"
 APPROVE_CMD_TIMEOUT_SEC="${APPROVE_CMD_TIMEOUT_SEC:-4}"
 APPROVE_CONTINUE_COOLDOWN_SEC="${APPROVE_CONTINUE_COOLDOWN_SEC:-4}"
 
@@ -41,14 +41,24 @@ $2"
   fi
 }
 
-# list_sorted_agents: prints "<pane_id> <agent> <agent_status>" with blocked
-# (red) panes first, working (green) panes second, and all others third.
+# list_sorted_agents: prints "<pane_id> <agent> <agent_status> <focused> <state_key>"
+# with blocked (red) panes first, focused+working second, working third, focused fourth, and others fifth.
 list_sorted_agents() {
   run_herdr agent list 2>/dev/null | json_eval \
-    '(.result.agents // []) | sort_by(if .agent_status == "blocked" then 0 elif .agent_status == "working" then 1 else 2 end) | .[] | "\(.pane_id) \(if (.agent // "") == "" then "unknown" else .agent end) \(.agent_status // "")"' \
-    'order = {"blocked": 0, "working": 1}
-for a in sorted(d.get("result", {}).get("agents") or [], key=lambda x: order.get(x.get("agent_status", ""), 2)):
-    print(a.get("pane_id", ""), a.get("agent") or "unknown", a.get("agent_status") or "")'
+    '(.result.agents // []) | sort_by(if .agent_status == "blocked" then 0 elif (.agent_status == "working" and .focused == true) then 1 elif .agent_status == "working" then 2 elif .focused == true then 3 else 4 end) | .[] | "\(.pane_id) \(if (.agent // "") == "" then "unknown" else .agent end) \(.agent_status // "") \(.focused // false) \(.agent_status // ""):\(.state_change_seq // 0):\(.revision // 0)"' \
+    'def rank(x):
+    st = x.get("agent_status", "")
+    foc = bool(x.get("focused", False))
+    if st == "blocked": return 0
+    if st == "working" and foc: return 1
+    if st == "working": return 2
+    if foc: return 3
+    return 4
+for a in sorted(d.get("result", {}).get("agents") or [], key=rank):
+    st = a.get("agent_status") or ""
+    foc = "true" if a.get("focused") else "false"
+    sk = f"{st}:{a.get(\"state_change_seq\", 0)}:{a.get(\"revision\", 0)}"
+    print(a.get("pane_id", ""), a.get("agent") or "unknown", st, foc, sk)'
 }
 
 # keys_for <agent>: keys to send to approve that agent's prompt.
@@ -119,59 +129,44 @@ agent_status() {
 screen_has_prompt() {
   [ -n "${1:-}" ] || return 1
   printf '%s\n' "$1" | tr -d '\r' | awk '
-    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0; opts_done = 0; in_box = 0 }
-    /^[[:space:]]*(┃|│|\|)?[[:space:]]*((❯|>)[[:space:]]*[0-9]+\.[[:space:]]+|1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)).*([Ee]nter to (confirm|select)|[Ee]sc to cancel)/ {
-      has_opt1 = 1
-      matched = 1
-      opts_done = 1
-      in_box = 0
+    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0 }
+    index($0, rule) > 0 && $0 !~ /^[[:space:]]*(┃|│|\|)/ {
+      in_quote = 0
       next
     }
-    /^[[:space:]]*(┃|│|\|)?[[:space:]]*(❯|>)[[:space:]]*1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)/ {
+    /^[[:space:]]*>[[:space:]]*$/ { next }
+    /([Rr]unning command\.\.\.|[Rr]eading file\.\.\.|[Ee]diting file|[Tt]hinking\.\.\.|[Ll]oading\.\.\.|[Tt]hought for [0-9]|[0-9.]+k[[:space:]]+in[[:space:]]*\||Conversation compacted)/ {
+      has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0
+      next
+    }
+    !in_quote && /^[[:space:]]*(┃|│|\|)?[[:space:]]*((❯|>)[[:space:]]*[0-9]+\.[[:space:]]+|1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)).*([Ee]nter to (confirm|select)|[Ee]sc to cancel)/ {
+      has_opt1 = 1; matched = 1
+      next
+    }
+    !in_quote && /^[[:space:]]*(┃|│|\|)?[[:space:]]*(❯|>)[[:space:]]*1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)/ {
       has_opt1 = 1
-      opts_done = 0
-      in_box = 0
       if (has_cue) matched = 1
       next
     }
-    has_opt1 && /^[[:space:]]*(┃|│|\|)?[[:space:]]*[2-9]\.[[:space:]]+([Yy]es|[Nn]o|[Aa]llow|[Dd]eny|[Aa]ccept|[Rr]eject)([[:space:],-]|$)/ {
-      matched = 1
-      if (/^[[:space:]]*(┃|│|\|)?[[:space:]]*[2-9]\.[[:space:]]+([Nn]o|[Dd]eny|[Rr]eject)([[:space:],-]|$)/) opts_done = 1
+    /^[[:space:]]*>/ {
+      in_quote = 1
+      has_cue = 0; has_opt1 = 0; matched = 0
       next
     }
-    has_opt1 && /^[[:space:]]*(┃|│|\|)?[[:space:]]*(.*([Nn]avigate|tab [Aa]mend|ctrl\+g|[Ee]nter to (confirm|select))|[Ee]sc to cancel[[:space:]]*$)/ {
+    in_quote {
+      if (/^[[:space:]]*$/ || (/^[[:space:]]+/ && $0 !~ /^[[:space:]]*(┃|│|\||●|○|✻)/)) next
+      in_quote = 0
+    }
+    has_opt1 && (/^[[:space:]]*(┃|│|\|)?[[:space:]]*[2-9]\.[[:space:]]+([Yy]es|[Nn]o|[Aa]llow|[Dd]eny|[Aa]ccept|[Rr]eject)([[:space:],-]|$)/ || /^[[:space:]]*(┃|│|\|)?[[:space:]]*(.*([Nn]avigate|tab [Aa]mend|ctrl\+g|[Ee]nter to (confirm|select))|[Ee]sc to cancel[[:space:]]*$)/) {
       matched = 1
-      opts_done = 1
       next
     }
-    !/^[[:space:]]*>/ && /([Aa]llow (sandbox bypass|access|calling|creation|administrator|remote)|[Aa]ccept this file edit\?|[Cc]onfirm the command is safe|[Rr]equesting permission for:|[Rr]un this command\?|[Rr]eason:[[:space:]]*outside workspace|[Dd]o you want to)/ {
+    /([Aa]llow (sandbox bypass|access|calling|creation|administrator|remote)|[Aa]ccept this file edit\?|[Cc]onfirm the command is safe|[Rr]equesting permission for:|[Rr]un this command\?|[Rr]eason:[[:space:]]*outside workspace|[Dd]o you want to)/ {
       has_cue = 1
       next
     }
-    matched || has_opt1 {
-      if (/^[[:space:]]*$/) next
-      if (index($0, rule) > 0) {
-        if (matched) in_box = 1
-        next
-      }
-      if (/^[[:space:]]*>[[:space:]]*$/) next
-      if (in_box && !/^[[:space:]]*>/) {
-        if (/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) {
-          has_cue = 0; has_opt1 = 0; matched = 0; opts_done = 0; in_box = 0
-        }
-        next
-      }
-      if (/^[[:space:]]*(┃|│|\||└|├|↳|▸|●|○)/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) next
-      if (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Ee]sc[[:space:]]+to[[:space:]]+cancel|[Pp]ress up to edit queued)/ || /(accept-edits|request-review|auto-approve|always-proceed|subagent\(s\)|task\(s\)[[:space:]]*·[[:space:]]*\/tasks)/) next
-      if (has_opt1 && !opts_done && /^[[:space:]][[:space:]]+[^[:space:]>]/ && !/([Rr]unning command|[Rr]eading file|[Tt]hinking|[0-9.]+k[[:space:]]+in[[:space:]]*\|)/) {
-        matched = 0
-        next
-      }
-      has_cue = 0
+    !matched && has_opt1 && !/^[[:space:]]*$/ {
       has_opt1 = 0
-      matched = 0
-      opts_done = 0
-      in_box = 0
     }
     END { exit (matched ? 0 : 1) }
   '
@@ -334,11 +329,11 @@ needs_approval() {
   pane_action "$1" "${2:-}" >/dev/null
 }
 
-# approve_pane <pane> <agent> [initial_status]: send the confirm key (or ctrl+k
+# approve_pane <pane> <agent> [initial_status] [auto_mode]: send the confirm key (or ctrl+k
 # for subagent approvals, or "continue" on network errors), then VERIFY the pane
 # left the blocked state.
 approve_pane() {
-  local pane="$1" agent="$2" initial_status="${3:-}" sent=0 last_action="" hint action cstamp now mt remaining
+  local pane="$1" agent="$2" initial_status="${3:-}" auto_mode="${4:-0}" sent=0 last_action="" cleared=0 hint action cstamp now mt remaining
   while [ "$sent" -lt "$APPROVE_MAX_SENDS" ]; do
     if [ "$sent" -eq 0 ]; then
       hint="$initial_status"
@@ -346,7 +341,10 @@ approve_pane() {
       hint=""
     fi
     action=$(pane_action "$pane" "$hint" || true)
-    [ -n "$action" ] || break
+    if [ -z "$action" ]; then
+      cleared=1
+      break
+    fi
     if [ "$action" = "continue" ]; then
       cstamp=$(continue_stamp_path "$pane")
       if [ -e "$cstamp" ]; then
@@ -364,6 +362,7 @@ approve_pane() {
       run_herdr agent wait "$pane" --until working \
         --timeout "$APPROVE_LEAVE_TIMEOUT_MS" >/dev/null 2>&1 || true
       sleep "$APPROVE_SETTLE_SEC"
+      cleared=1
       break
     fi
     if [ "$action" = "ctrl+k" ]; then
@@ -375,6 +374,10 @@ approve_pane() {
           --timeout "$APPROVE_LEAVE_TIMEOUT_MS" >/dev/null 2>&1 || true
       fi
       sleep "$APPROVE_SETTLE_SEC"
+      if [ "$auto_mode" = "1" ] && [ -n "$hint" ] && [ "$hint" != "blocked" ]; then
+        cleared=1
+        break
+      fi
       continue
     fi
     # shellcheck disable=SC2046
@@ -386,10 +389,14 @@ approve_pane() {
         --timeout "$APPROVE_LEAVE_TIMEOUT_MS" >/dev/null 2>&1 || true
     fi
     sleep "$APPROVE_SETTLE_SEC"
+    if [ "$auto_mode" = "1" ] && [ -n "$hint" ] && [ "$hint" != "blocked" ]; then
+      cleared=1
+      break
+    fi
   done
   if [ "$sent" -eq 0 ]; then
     printf -- '-'
-  elif [ "$last_action" = "continue" ]; then
+  elif [ "$cleared" = "1" ] || [ "$last_action" = "continue" ]; then
     printf 1
   else
     remaining=$(pane_action "$pane" || true)

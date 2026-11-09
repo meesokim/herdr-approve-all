@@ -12,6 +12,13 @@ if (-not (Test-Path -LiteralPath $csc)) {
     throw "csc.exe not found at $csc"
 }
 
+$dispatchCs = Join-Path $PSScriptRoot 'DispatchWindows.cs'
+$dispatchExe = Join-Path $root 'scripts\dispatch.exe'
+& $csc '/nologo' '/optimize+' '/target:exe' "/out:$dispatchExe" $dispatchCs
+if ($LASTEXITCODE -ne 0) {
+    throw "csc.exe failed building dispatch.exe with exit code $LASTEXITCODE"
+}
+
 $csFile = Join-Path $PSScriptRoot 'HerdrApproveAllSetup.cs'
 $cscArgs = @(
     '/nologo',
@@ -22,6 +29,7 @@ $cscArgs = @(
     ('/resource:' + (Join-Path $root 'README.md') + ',README.md'),
     ('/resource:' + (Join-Path $root 'scripts\dispatch') + ',scripts/dispatch'),
     ('/resource:' + (Join-Path $root 'scripts\dispatch.cmd') + ',scripts/dispatch.cmd'),
+    ('/resource:' + $dispatchExe + ',scripts/dispatch.exe'),
     ('/resource:' + (Join-Path $root 'scripts\approve-windows.ps1') + ',scripts/approve-windows.ps1'),
     ('/resource:' + (Join-Path $root 'scripts\lib.sh') + ',scripts/lib.sh'),
     ('/resource:' + (Join-Path $root 'scripts\approve-blocked.sh') + ',scripts/approve-blocked.sh'),

@@ -42,8 +42,8 @@ approved=0
 stuck=0
 sweep_once() {
   rm -rf "${RESULTS:?}"/*
-  local n=0 f pane agent status
-  while read -r pane agent status; do
+  local n=0 f pane agent status _rest
+  while read -r pane agent status _rest; do
     [ -n "$pane" ] || continue
     n=$((n + 1))
     (

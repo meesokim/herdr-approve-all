@@ -50,22 +50,45 @@ case "${1:-}" in
         rm -f "$PID_FILE" 2>/dev/null || true
       fi
     ' EXIT
+    idle_cache=""
+    tick=0
     while [ -f "$FLAG" ]; do
-      while read -r pane agent status; do
+      tick=$((tick + 1))
+      if [ $((tick % 10)) -eq 0 ]; then
+        idle_cache=""
+      fi
+      while read -r pane agent status focused state_key; do
         [ -f "$FLAG" ] || break
         [ -n "$pane" ] || continue
+        if { [ "${status:-}" = "idle" ] || [ "${status:-}" = "done" ]; } && [ "${focused:-false}" != "true" ]; then
+          cache_entry="$pane=${state_key:-}"
+          case "
+$idle_cache
+" in
+            *"
+$cache_entry
+"*)
+              continue
+              ;;
+            *)
+              idle_cache="$idle_cache
+$cache_entry"
+              ;;
+          esac
+        fi
         lock=$(pane_lock_path "$pane")
         if take_lock "$lock" 15; then
-          res=$(approve_pane "$pane" "$agent" "${status:-}" || printf -- '-')
+          res=$(approve_pane "$pane" "$agent" "${status:-}" 1 || printf -- '-')
           rmdir "$lock" 2>/dev/null || true
           if [ "$res" = "1" ] || [ "$res" = "0" ]; then
+            idle_cache=""
             printf '%s pane=%s result=%s\n' "$(date -Iseconds 2>/dev/null || date)" "$pane" "$res" > "$LOG_FILE" 2>/dev/null || true
           fi
         fi
       done << EOF
 $(list_sorted_agents 2>/dev/null || true)
 EOF
-      sleep "${APPROVE_AUTO_POLL_SEC:-0.3}"
+      sleep "${APPROVE_AUTO_POLL_SEC:-0.15}"
     done
     ;;
   *)

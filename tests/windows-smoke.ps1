@@ -67,7 +67,7 @@ exit /b 0
     if ((Send-Count) -ne 2) { throw 'sweep did not drain stacked prompts' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -First 1).Trim() -ne 'y enter') { throw 'sweep did not send configured keys' }
 
-    # Verify agy sandbox-bypass prompt (no "esc to cancel" footer, rendered above composer box) is approved while status is working/idle.
+    # Verify agy sandbox-bypass prompt (no "esc to cancel" footer, rendered above composer box, including column-0 wrapped options in narrow split panes) is approved while status is working/idle.
     $rule = ([string][char]0x2500) * 60
     $warn = [string][char]0x26a0
     $unlock = [char]::ConvertFromUtf32(0x1F513)
@@ -76,8 +76,10 @@ $unlock Allow sandbox bypass for command execution?
 $warn Confirm the command is safe to run outside of the sandbox with full network and disk access.
 
 > 1. Yes, run command
-  2. Yes, and always allow in this conversation for commands that start with 'ls'
-  3. Yes, and always allow for commands that start with 'ls' (Persist to settings.json)
+  2. Yes, and always allow in this conversation for commands that start with
+'powershell.exe -NoProfile'
+  3. Yes, and always allow for commands that start with 'powershell.exe'
+(Persist to settings.json)
   4. No, cancel
 $rule
 >
@@ -87,6 +89,15 @@ $rule
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $bypassScreen, [Text.Encoding]::UTF8)
     & $script sweep
     if ((Send-Count) -ne 3) { throw 'sweep missed agy sandbox-bypass prompt without esc to cancel' }
+
+    # Verify agy minimal "Run this command?\n> 1. Yes, run command" prompt (without Options 2-4 visible) is approved while status is working/idle.
+    $runCmdScreen = @"
+Run this command?
+> 1. Yes, run command
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $runCmdScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 4) { throw 'sweep missed minimal Run this command? prompt' }
 
     # Verify agy outside-workspace file access prompt (including composer box and background task tray below) is approved while status is working/idle.
     $dot = [string][char]0x25cf
@@ -106,7 +117,7 @@ esc to cancel                               accept-edits $mid 1 task(s) $mid /ta
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $outsideScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 4) { throw 'sweep missed agy outside-workspace file access prompt' }
+    if ((Send-Count) -ne 5) { throw 'sweep missed agy outside-workspace file access prompt' }
 
     # Verify agy file edit acceptance prompt ("Accept this file edit?") with non-accept-edits footer ("esc to cancel ... Gemini 4 Argon · medium") is approved while status is working/idle/done.
     $fileEditScreen = @"
@@ -120,7 +131,7 @@ esc to cancel                                                                   
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $fileEditScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 5) { throw 'sweep missed agy file edit acceptance prompt' }
+    if ((Send-Count) -ne 6) { throw 'sweep missed agy file edit acceptance prompt' }
 
     # Verify transient network issue screen submits "continue".
     $netErrorScreen = @"
@@ -134,7 +145,7 @@ $rule
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $netErrorScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 6) { throw 'sweep did not submit continue on network error screen' }
+    if ((Send-Count) -ne 7) { throw 'sweep did not submit continue on network error screen' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'prompt:continue') { throw 'sweep did not send continue prompt' }
 
     # Verify agent executor stream idle timeout / context deadline exceeded error submits "continue".
@@ -149,7 +160,7 @@ $rule
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $streamErrorScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 7) { throw 'sweep did not submit continue on stream idle timeout error screen' }
+    if ((Send-Count) -ne 8) { throw 'sweep did not submit continue on stream idle timeout error screen' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'prompt:continue') { throw 'sweep did not send continue prompt on stream error' }
 
     # Verify subagent approval banner ("ctrl+k approve · alt+j manage") sends ctrl+k in agy's live subagent tray layout
@@ -172,7 +183,7 @@ $rule
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $subagentScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 8) { throw 'sweep did not send ctrl+k on subagent approval screen' }
+    if ((Send-Count) -ne 9) { throw 'sweep did not send ctrl+k on subagent approval screen' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'ctrl+k') { throw 'sweep did not send ctrl+k key' }
 
     # Verify normal working screen with markdown list + quoted network/stream error + quoted ctrl+k banner + composer box does NOT false-trigger.
@@ -184,6 +195,8 @@ $rule
       2. Yes, and always allow in this conversation for commands that start with 'ls'
       3. Yes, and always allow for commands that start with 'ls' (Persist to settings.json)
       4. No, cancel
+  > Run this command?
+    > 1. Yes, run command
   > Accept this file edit?
     > 1. Yes, accept this change
       2. No, reject this change
@@ -210,7 +223,7 @@ esc to cancel                               accept-edits
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $workingScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 8) { throw 'sweep falsely triggered on normal working screen with scrollback' }
+    if ((Send-Count) -ne 9) { throw 'sweep falsely triggered on normal working screen with scrollback' }
     Remove-Item -LiteralPath (Join-Path $tmp 'fallback_screen.txt') -Force -ErrorAction SilentlyContinue
 
     & $script on
@@ -221,13 +234,13 @@ esc to cancel                               accept-edits
     # No event is dispatched for any of these prompts, including a prompt whose
     # semantic status stays working. The same worker must handle every wave.
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 9 } 'first automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 10 } 'first automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'first prompt did not settle'
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 10 } 'second automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 11 } 'second automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'second prompt did not settle'
     Set-Content (Join-Path $tmp 'fallback') ''
-    Wait-Until { (Send-Count) -ge 11 } 'prompt reported as working was missed'
+    Wait-Until { (Send-Count) -ge 12 } 'prompt reported as working was missed'
     & $script startup
     if ((Read-PidFile $pidFile) -ne $workerPid) { throw 'startup replaced an active monitor' }
     & $script off

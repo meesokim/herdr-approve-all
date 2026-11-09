@@ -66,14 +66,17 @@ function New-PluginMutex([string]$Name) {
 function Lock-Mutex($Mutex, [int]$Timeout = 0) {
     try { return $Mutex.WaitOne($Timeout) } catch [Threading.AbandonedMutexException] { return $true }
 }
-function Start-Monitor {
-    # Probe the same mutex as the worker, rather than trusting a reusable PID.
+function Test-MonitorRunning {
     $mutex = New-PluginMutex 'monitor'
     $locked = $false
     try {
-        $locked = Lock-Mutex $mutex
-        if (-not $locked) { return }
+        $locked = Lock-Mutex $mutex 0
+        return (-not $locked)
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+}
+function Start-Monitor {
+    # Probe the same mutex as the worker, rather than trusting a reusable PID.
+    if (Test-MonitorRunning) { return }
     $null = New-Item -ItemType Directory -Path $state -Force
     $psExe = Join-Path $PSHOME 'powershell.exe'
     $workerArguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" monitor -ConfigDir "' + $config + '" -StateDir "' + $state + '" -HerdrBin "' + $herdr + '"'
@@ -101,67 +104,53 @@ function Test-PromptVisible([string]$Screen) {
     $hasCue = $false
     $hasOpt1 = $false
     $matched = $false
-    $optsDone = $false
-    $inComposer = $false
+    $inUserQuote = $false
     $opt1Pattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow|Accept)\b'
     $optNPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:Yes|No|Allow|Deny|Accept|Reject)\b'
-    $optEndPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:No|Deny|Reject)\b'
     $classicLinePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow|Accept)\b).*(?:enter to (?:confirm|select)|esc to cancel)'
     $cuePattern = '(?i)Allow (?:sandbox bypass|access|calling|creation|administrator|remote)\b|Accept this file edit\?|Confirm the command is safe|Requesting permission for:|Run this command\?|Reason:\s*outside workspace|Do you want to'
     $footerCuePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:.*(?:Navigate|tab Amend|ctrl\+g|enter to (?:confirm|select))|esc to cancel\s*$)'
+    $resetActivityPattern = '(?i)Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|\d+(?:\.\d+)?k\s+in\s*\||Conversation compacted'
     foreach ($line in ($Screen -split "\r?\n")) {
-        if ($line -match $classicLinePattern) {
-            $hasOpt1 = $true
-            $matched = $true
-            $optsDone = $true
-            $inComposer = $false
+        if ($line -match ('^\s*' + $rule + '{10,}\s*$') -and $line -notmatch '^\s*[\u2503\u2502|]') {
+            $inUserQuote = $false
             continue
         }
-        if ($line -match $opt1Pattern) {
+        if ($line -match '^\s*>\s*$') { continue }
+        if ($line -match $resetActivityPattern) {
+            $hasCue = $false; $hasOpt1 = $false; $matched = $false; $inUserQuote = $false
+            continue
+        }
+        if (-not $inUserQuote -and $line -match $classicLinePattern) {
+            $hasOpt1 = $true; $matched = $true
+            continue
+        }
+        if (-not $inUserQuote -and $line -match $opt1Pattern) {
             $hasOpt1 = $true
-            $optsDone = $false
-            $inComposer = $false
             if ($hasCue) { $matched = $true }
             continue
         }
-        if ($hasOpt1 -and $line -match $optNPattern) {
-            $matched = $true
-            if ($line -match $optEndPattern) { $optsDone = $true }
+        if ($line -match '^\s*>') {
+            $inUserQuote = $true
+            $hasCue = $false; $hasOpt1 = $false; $matched = $false
             continue
         }
-        if ($hasOpt1 -and $line -match $footerCuePattern) {
+        if ($inUserQuote) {
+            if ($line -match '^\s*$' -or ($line -match '^\s+' -and $line -notmatch '^\s*[\u2503\u2502|\u25cf\u25cb\u273b]')) {
+                continue
+            }
+            $inUserQuote = $false
+        }
+        if ($hasOpt1 -and ($line -match $optNPattern -or $line -match $footerCuePattern)) {
             $matched = $true
-            $optsDone = $true
             continue
         }
-        if ($line -notmatch '^\s*>' -and $line -match $cuePattern) {
+        if ($line -match $cuePattern) {
             $hasCue = $true
             continue
         }
-        if ($matched -or $hasOpt1) {
-            if ($line -match '^\s*$') { continue }
-            if ($line -match ('^\s*' + $rule + '{10,}\s*$')) {
-                if ($matched) { $inComposer = $true }
-                continue
-            }
-            if ($line -match '^\s*>\s*$') { continue }
-            if ($inComposer -and $line -notmatch '^\s*>') {
-                if ($line -match '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') {
-                    $hasCue = $false; $hasOpt1 = $false; $matched = $false; $optsDone = $false; $inComposer = $false
-                }
-                continue
-            }
-            if ($line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3\u25b8\u25cf\u25cb]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') { continue }
-            if ($line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|Press up to edit queued|esc\s+to\s+cancel\b|\S.*(?:accept-edits|request-review|auto-approve|always-proceed|subagent\(s\)|task\(s\)\s*.*\s*/tasks))') { continue }
-            if ($hasOpt1 -and -not $optsDone -and $line -match '^\s{2,}[^\s>]' -and $line -notmatch '(?i)Running command|Reading file|Thinking|\d+(?:\.\d+)?k\s+in\s*\|') {
-                $matched = $false
-                continue
-            }
-            $hasCue = $false
+        if (-not $matched -and $hasOpt1 -and $line -notmatch '^\s*$') {
             $hasOpt1 = $false
-            $matched = $false
-            $optsDone = $false
-            $inComposer = $false
         }
     }
     return $matched
@@ -274,11 +263,13 @@ function Needs-Approval([string]$Pane, [string]$KnownStatus = '') {
 function Get-SortedAgents {
     $agents = @((Invoke-Herdr @('agent','list') | ConvertFrom-Json).result.agents)
     return @($agents | Sort-Object {
-        switch ([string]$_.agent_status) {
-            'blocked' { 0 }
-            'working' { 1 }
-            default   { 2 }
-        }
+        $st = [string]$_.agent_status
+        $foc = [bool]$_.focused
+        if ($st -eq 'blocked') { 0 }
+        elseif ($st -eq 'working' -and $foc) { 1 }
+        elseif ($st -eq 'working') { 2 }
+        elseif ($foc) { 3 }
+        else { 4 }
     })
 }
 function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = '') {
@@ -296,11 +287,13 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
         }
         $sent = 0
         $lastAction = ''
+        $cleared = $false
         $max = [int](Number-Setting 'APPROVE_MAX_SENDS' 5)
+        $settleMs = [int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.12))
         while ($sent -lt $max -and $keys.Count -gt 0) {
             $hint = if ($sent -eq 0) { $InitialStatus } else { '' }
             $action = Get-PaneAction $Pane $hint
-            if (-not $action) { break }
+            if (-not $action) { $cleared = $true; break }
             if ($automatic -and -not (Test-Path -LiteralPath $flag)) { break }
             $timeout = [int](Number-Setting 'APPROVE_LEAVE_TIMEOUT_MS' 1200)
             if ($action -eq 'continue') {
@@ -317,7 +310,8 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
                 $sent++
                 $lastAction = 'continue'
                 try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','working','--timeout',"$timeout") ([Math]::Max(2000, $timeout + 1500)) } catch { }
-                Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.25)))
+                Start-Sleep -Milliseconds $settleMs
+                $cleared = $true
                 break
             }
             if ($action -eq 'ctrl+k') {
@@ -327,7 +321,8 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
                 if ($hint -eq 'blocked') {
                     try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','idle','--until','working','--until','done','--timeout',"$timeout") ([Math]::Max(2000, $timeout + 1500)) } catch { }
                 }
-                Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.25)))
+                Start-Sleep -Milliseconds $settleMs
+                if ($automatic -and $hint -and $hint -ne 'blocked') { $cleared = $true; break }
                 continue
             }
             try { $null = Invoke-Herdr (@('agent','send-keys',$Pane) + $keys) } catch { break }
@@ -336,10 +331,11 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
             if (-not $hint -or $hint -eq 'blocked') {
                 try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','idle','--until','working','--until','done','--timeout',"$timeout") ([Math]::Max(2000, $timeout + 1500)) } catch { }
             }
-            Start-Sleep -Milliseconds ([int](1000 * (Number-Setting 'APPROVE_SETTLE_SEC' 0.25)))
+            Start-Sleep -Milliseconds $settleMs
+            if ($automatic -and $hint -and $hint -ne 'blocked') { $cleared = $true; break }
         }
         if ($sent -eq 0) { return '-' }
-        if ($lastAction -eq 'continue') { return '1' }
+        if ($cleared -or $lastAction -eq 'continue') { return '1' }
         $remaining = Get-PaneAction $Pane
         if ($remaining -eq 'approve' -or $remaining -eq 'ctrl+k') { return '0' }
         return '1'
@@ -359,16 +355,19 @@ switch ($Mode) {
     }
     'event' {
         if (-not (Test-Path -LiteralPath $flag) -or -not $env:HERDR_PLUGIN_EVENT_JSON) { return }
-        Start-Monitor
+        $monitorRunning = Test-MonitorRunning
+        if (-not $monitorRunning) { Start-Monitor }
         $eventData = ($env:HERDR_PLUGIN_EVENT_JSON | ConvertFrom-Json).data
         if ($eventData.pane_id) {
             $paneId = [string]$eventData.pane_id
             $agentName = [string]$eventData.agent
             $statusHint = if ($eventData.agent_status -eq 'blocked') { 'blocked' } else { [string]$eventData.agent_status }
-            $res = Approve-Pane $paneId $agentName $statusHint
-            if ($res -eq '-' -and $statusHint -ne 'blocked') {
-                Start-Sleep -Milliseconds 150
-                $null = Approve-Pane $paneId $agentName ''
+            if ($statusHint -eq 'blocked' -or -not $monitorRunning) {
+                $res = Approve-Pane $paneId $agentName $statusHint
+                if ($res -eq '-' -and $statusHint -ne 'blocked') {
+                    Start-Sleep -Milliseconds 120
+                    $null = Approve-Pane $paneId $agentName ''
+                }
             }
         }
     }
@@ -386,24 +385,40 @@ switch ($Mode) {
             if (-not $locked) { return }
             $null = New-Item -ItemType Directory -Path $state -Force
             Set-Content -LiteralPath $pidFile -Value $PID -Encoding ASCII
+            $idleCache = @{}
+            $tick = 0
             while (Test-Path -LiteralPath $flag) {
+                $tick++
                 try {
                     # Status events are only hints: stacked or misdetected prompts
                     # may never produce another blocked transition. Prioritize red
-                    # (blocked) panes first, then green (working) panes.
+                    # (blocked) panes first, then focused/working panes.
                     $agents = Get-SortedAgents
                     foreach ($agent in $agents) {
                         if (-not (Test-Path -LiteralPath $flag)) { break }
-                        $result = Approve-Pane ([string]$agent.pane_id) ([string]$agent.agent) ([string]$agent.agent_status)
+                        $paneId = [string]$agent.pane_id
+                        $status = [string]$agent.agent_status
+                        $isFocused = [bool]$agent.focused
+                        if ($status -in @('idle', 'done') -and -not $isFocused) {
+                            $stateKey = "${status}:$($agent.state_change_seq):$($agent.revision)"
+                            if ($idleCache[$paneId] -eq $stateKey -and ($tick % 10) -ne 0) {
+                                continue
+                            }
+                            $idleCache[$paneId] = $stateKey
+                        } else {
+                            $null = $idleCache.Remove($paneId)
+                        }
+                        $result = Approve-Pane $paneId ([string]$agent.agent) $status
                         if ($result -eq '1' -or $result -eq '0') {
-                            Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) pane=$($agent.pane_id) result=$result"
+                            $null = $idleCache.Remove($paneId)
+                            Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) pane=$paneId result=$result"
                         }
                     }
                 } catch {
                     # Herdr may be restarting. Keep the persisted toggle and retry.
                     Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $_"
                 }
-                Start-Sleep -Milliseconds ([Math]::Max(100, [int](1000 * (Number-Setting 'APPROVE_AUTO_POLL_SEC' 0.3))))
+                Start-Sleep -Milliseconds ([Math]::Max(80, [int](1000 * (Number-Setting 'APPROVE_AUTO_POLL_SEC' 0.15))))
             }
         } finally {
             if ($locked) { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue; $mutex.ReleaseMutex() }
