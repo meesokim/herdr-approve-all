@@ -195,22 +195,37 @@ namespace HerdrApproveAllSetup
                     int pid;
                     if (int.TryParse(raw, out pid) && pid > 0)
                     {
-                        try
+                    try
+                    {
+                        Process proc = Process.GetProcessById(pid);
+                        if (proc.ProcessName.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            proc.ProcessName.IndexOf("dispatch", StringComparison.OrdinalIgnoreCase) >= 0)
                         {
-                            Process proc = Process.GetProcessById(pid);
-                            if (proc.ProcessName.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                proc.Kill();
-                                proc.WaitForExit(2000);
-                            }
+                            proc.Kill();
+                            proc.WaitForExit(2000);
                         }
-                        catch { }
                     }
-                    File.Delete(pidFile);
+                    catch { }
+                }
+                File.Delete(pidFile);
                 }
                 catch { }
             }
-            RunProcess("wmic.exe", "process where \"name='powershell.exe' and commandline like '%approve-windows.ps1%monitor%'\" call terminate", 10000, false);
+            RunProcess("wmic.exe", "process where \"(name='powershell.exe' and commandline like '%approve-windows.ps1%monitor%') or (name='dispatch.exe' and commandline like '%monitor%')\" call terminate", 10000, false);
+            try
+            {
+                foreach (Process p in Process.GetProcessesByName("dispatch"))
+                {
+                    try
+                    {
+                        p.Kill();
+                        p.WaitForExit(2000);
+                    }
+                    catch { }
+                    finally { p.Dispose(); }
+                }
+            }
+            catch { }
         }
 
         private static void ExtractEmbeddedPluginFiles(string targetPluginDir)
@@ -296,15 +311,20 @@ namespace HerdrApproveAllSetup
                 File.WriteAllText(flagFile, string.Empty, Encoding.ASCII);
             }
 
-            // Trigger unified cross-platform action via Herdr CLI (runs inside the Herdr daemon process)
-            RunProcess(herdrExe, "plugin action invoke " + PluginId + ".auto-on", 15000, false);
+            // Start the native C# background monitor directly via scripts\dispatch.exe
+            string dispatchExe = Path.Combine(targetPluginDir, "scripts", "dispatch.exe");
+            if (File.Exists(dispatchExe))
+            {
+                string args = "on -ConfigDir \"" + configDir + "\" -StateDir \"" + stateDir + "\" -HerdrBin \"" + herdrExe + "\"";
+                RunProcess(dispatchExe, args, 10000, false);
+            }
 
             string pidFile = Path.Combine(stateDir, "monitor.pid");
-            string activePid = WaitForMonitorPid(pidFile, 16);
+            string activePid = WaitForMonitorPid(pidFile, 20);
 
             if (string.IsNullOrEmpty(activePid))
             {
-                // Fallback when Herdr daemon is not currently running: invoke PowerShell directly
+                // Fallback to PowerShell script if dispatch.exe did not start monitor
                 string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
                 string scriptPath = Path.Combine(targetPluginDir, "scripts", "approve-windows.ps1");
                 if (File.Exists(scriptPath))

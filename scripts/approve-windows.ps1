@@ -26,7 +26,7 @@ function Number-Setting([string]$Name, [double]$Default) {
     return $Default
 }
 function Invoke-Herdr([string[]]$Arguments, [int]$TimeoutMs = 0) {
-    if ($TimeoutMs -le 0) { $TimeoutMs = [int](Number-Setting 'APPROVE_CMD_TIMEOUT_MS' 4000) }
+    if ($TimeoutMs -le 0) { $TimeoutMs = [int](Number-Setting 'APPROVE_CMD_TIMEOUT_MS' 12000) }
     $argString = ($Arguments | ForEach-Object {
         if ($_.Length -eq 0) { '""' }
         elseif ($_ -notmatch '[\s"]') { $_ }
@@ -35,11 +35,13 @@ function Invoke-Herdr([string[]]$Arguments, [int]$TimeoutMs = 0) {
     $psi = [Diagnostics.ProcessStartInfo]::new($herdr, $argString)
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
     $proc = [Diagnostics.Process]::Start($psi)
     try {
+        try { $proc.StandardInput.Close() } catch { }
         $outTask = $proc.StandardOutput.ReadToEndAsync()
         $null = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($TimeoutMs)) {
@@ -413,6 +415,8 @@ switch ($Mode) {
             $null = New-Item -ItemType Directory -Path $state -Force
             Set-Content -LiteralPath $pidFile -Value $PID -Encoding ASCII -ErrorAction SilentlyContinue
             $idleCache = @{}
+            $cachedAgents = @()
+            $lastListAt = [DateTime]::MinValue
             $tick = 0
             while (Test-Path -LiteralPath $flag) {
                 $tick++
@@ -420,8 +424,18 @@ switch ($Mode) {
                     # Status events are only hints: stacked or misdetected prompts
                     # may never produce another blocked transition. Prioritize red
                     # (blocked) panes first, then focused/working panes.
-                    $agents = Get-SortedAgents
-                    foreach ($agent in $agents) {
+                    $refreshSec = if ($env:MOCK_HERDR_DIR) { 0.0 } else { 4.0 }
+                    if ($cachedAgents.Count -eq 0 -or (([DateTime]::UtcNow - $lastListAt).TotalSeconds -ge $refreshSec)) {
+                        try {
+                            $fresh = Get-SortedAgents
+                            if ($fresh.Count -gt 0) { $cachedAgents = $fresh }
+                            $lastListAt = [DateTime]::UtcNow
+                        } catch {
+                            $lastListAt = [DateTime]::UtcNow
+                            try { Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $_" -ErrorAction SilentlyContinue } catch { }
+                        }
+                    }
+                    foreach ($agent in $cachedAgents) {
                         if (-not (Test-Path -LiteralPath $flag)) { break }
                         $paneId = [string]$agent.pane_id
                         $status = [string]$agent.agent_status
