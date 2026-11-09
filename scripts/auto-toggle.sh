@@ -57,12 +57,14 @@ case "${1:-}" in
       if [ $((tick % 10)) -eq 0 ]; then
         idle_cache=""
       fi
+      pane_idx=0
       while read -r pane agent status focused state_key; do
         [ -f "$FLAG" ] || break
         [ -n "$pane" ] || continue
+        pane_idx=$((pane_idx + 1))
         [ "${status:-}" = "?" ] && status=""
-        if { [ "${status:-}" = "idle" ] || [ "${status:-}" = "done" ]; } && [ "${focused:-false}" != "true" ]; then
-          cache_entry="$pane=${state_key:-}"
+        cache_entry="$pane=${state_key:-}"
+        if { [ "${status:-}" = "idle" ] || [ "${status:-}" = "done" ]; } && [ "${focused:-false}" != "true" ] && [ "$pane_idx" -gt 2 ]; then
           case "
 $idle_cache
 " in
@@ -76,14 +78,28 @@ $cache_entry
 $cache_entry"
               ;;
           esac
+        else
+          case "
+$idle_cache
+" in
+            *"
+stuck:$cache_entry
+"*)
+              continue
+              ;;
+          esac
         fi
         lock=$(pane_lock_path "$pane")
         if take_lock "$lock" 15; then
           res=$(approve_pane "$pane" "$agent" "${status:-}" 1 || printf -- '-')
           rmdir "$lock" 2>/dev/null || true
-          if [ "$res" = "1" ] || [ "$res" = "0" ]; then
+          if [ "$res" = "1" ]; then
             idle_cache=""
-            printf '%s pane=%s result=%s\n' "$(date -Iseconds 2>/dev/null || date)" "$pane" "$res" > "$LOG_FILE" 2>/dev/null || true
+            printf '%s pane=%s result=%s\n' "$(date -Iseconds 2>/dev/null || date)" "$pane" "$res" >> "$LOG_FILE" 2>/dev/null || true
+          elif [ "$res" = "0" ]; then
+            idle_cache="$idle_cache
+stuck:$cache_entry"
+            printf '%s pane=%s result=%s\n' "$(date -Iseconds 2>/dev/null || date)" "$pane" "$res" >> "$LOG_FILE" 2>/dev/null || true
           fi
         fi
       done << EOF

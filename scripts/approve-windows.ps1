@@ -105,24 +105,36 @@ function Start-Monitor {
     # Probe the same mutex as the worker, rather than trusting a reusable PID.
     if (Test-MonitorRunning) { return }
     $null = New-Item -ItemType Directory -Path $state -Force
+    $dispatchExe = Join-Path $PSScriptRoot 'dispatch.exe'
+    if ((-not $env:MOCK_HERDR_DIR) -and (Test-Path -LiteralPath $dispatchExe)) {
+        $dArgs = 'monitor -ConfigDir "' + $config + '" -StateDir "' + $state + '" -HerdrBin "' + $herdr + '"'
+        $null = Start-Process -FilePath $dispatchExe -ArgumentList $dArgs -WindowStyle Hidden
+        return
+    }
     $psExe = Join-Path $PSHOME 'powershell.exe'
     $workerArguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $PSCommandPath + '" monitor -ConfigDir "' + $config + '" -StateDir "' + $state + '" -HerdrBin "' + $herdr + '"'
-    # When invoked by Herdr on Windows, short-lived action/event/startup hooks
-    # may run inside a Job Object that terminates child processes on exit.
-    # Spawning via WMI (Win32_Process.Create) places the worker under WmiPrvSE.exe
-    # outside the hook's Job Object. Fall back to Start-Process in mock tests.
-    if (-not $env:MOCK_HERDR_DIR) {
-        try {
-            $startupClass = Get-CimClass -ClassName Win32_ProcessStartup -ErrorAction Stop
-            $startupInfo = New-CimInstance -CimClass $startupClass -ClientOnly -Property @{ ShowWindow = [uint16]0 }
-            $cimResult = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-                CommandLine = ('"' + $psExe + '" ' + $workerArguments)
-                ProcessStartupInformation = $startupInfo
-            } -ErrorAction Stop
-            if ($cimResult -and $cimResult.ReturnValue -eq 0) { return }
-        } catch { }
-    }
     $null = Start-Process -FilePath $psExe -ArgumentList $workerArguments -WindowStyle Hidden
+}
+function Normalize-Screen([string]$Raw) {
+    if (-not $Raw) { return '' }
+    $trimmed = $Raw.TrimStart()
+    if (-not $trimmed.StartsWith('{')) { return $Raw }
+    try {
+        $parsed = $trimmed | ConvertFrom-Json
+        $res = if ($null -ne $parsed.result) { $parsed.result } else { $parsed }
+        if ($res -is [string]) { return $res }
+        if ($res -is [array]) { return ($res -join "`n") }
+        if ($null -ne $res.lines -and $res.lines -is [array]) { return ($res.lines -join "`n") }
+        foreach ($prop in @('text', 'content', 'output', 'screen', 'buffer', 'data')) {
+            if ($null -ne $res.$prop -and $res.$prop -is [string]) { return [string]$res.$prop }
+        }
+        foreach ($p in $res.PSObject.Properties) {
+            if ($p.Name -notin @('id', 'type', 'pane_id', 'source', 'agent') -and $p.Value -is [string]) {
+                return [string]$p.Value
+            }
+        }
+    } catch { }
+    return $Raw
 }
 function Test-PromptVisible([string]$Screen) {
     if (-not $Screen) { return $false }
@@ -132,6 +144,7 @@ function Test-PromptVisible([string]$Screen) {
     $hasOpt1 = $false
     $matched = $false
     $inUserQuote = $false
+    $afterRule = $false
     $opt1Pattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow|Accept)\b'
     $optNPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:Yes|No|Allow|Deny|Accept|Reject)\b'
     $classicLinePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow|Accept)\b).*(?:enter to (?:confirm|select)|esc to cancel)'
@@ -140,10 +153,17 @@ function Test-PromptVisible([string]$Screen) {
     $resetActivityPattern = '(?i)Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|\d+(?:\.\d+)?k\s+in\s*\||Conversation compacted'
     foreach ($line in ($Screen -split "\r?\n")) {
         if ($line -match ('^\s*' + $rule + '{10,}\s*$') -and $line -notmatch '^\s*[\u2503\u2502|]') {
+            if ($matched) { return $true }
             $inUserQuote = $false
+            $afterRule = $true
             continue
         }
         if ($line -match '^\s*>\s*$') { continue }
+        if ($afterRule -and $line -match '^\s*>') {
+            $afterRule = $false
+            continue
+        }
+        if ($line -notmatch '^\s*$') { $afterRule = $false }
         if ($line -match $resetActivityPattern) {
             $hasCue = $false; $hasOpt1 = $false; $matched = $false; $inUserQuote = $false
             continue
@@ -265,7 +285,7 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
         if ($status -eq 'blocked') {
             if ($env:APPROVE_SCRAPE_FALLBACK -ne '0') {
                 try {
-                    $bScreen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40')
+                    $bScreen = Normalize-Screen (Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40'))
                     if ($bScreen) {
                         if (Test-CtrlKNeeded $bScreen) { return 'ctrl+k' }
                         if (Test-PromptVisible $bScreen) { return 'approve' }
@@ -277,7 +297,7 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
             return 'approve'
         }
         if ($env:APPROVE_SCRAPE_FALLBACK -eq '0') { return '' }
-        $screen = Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40')
+        $screen = Normalize-Screen (Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40'))
         if (Test-CtrlKNeeded $screen) { return 'ctrl+k' }
         if (Test-PromptVisible $screen) { return 'approve' }
         if (Test-ContinueNeeded $screen) { return 'continue' }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,6 +11,54 @@ using System.Threading;
 
 internal static class Program
 {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcessW(
+        string lpApplicationName,
+        StringBuilder lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
     private static string _herdr = "herdr";
     private static string _config = "";
     private static string _state = "";
@@ -67,11 +116,13 @@ internal static class Program
         {
             _config = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "herdr", "plugins", "config", "renkoya1.approve-all");
         }
+        if (_config.StartsWith(@"\\?\", StringComparison.Ordinal)) _config = _config.Substring(4);
         _state = !string.IsNullOrEmpty(stateArg) ? stateArg : (Environment.GetEnvironmentVariable("HERDR_PLUGIN_STATE_DIR") ?? "");
         if (string.IsNullOrEmpty(_state))
         {
             _state = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "herdr", "plugins", "renkoya1.approve-all");
         }
+        if (_state.StartsWith(@"\\?\", StringComparison.Ordinal)) _state = _state.Substring(4);
         _herdr = !string.IsNullOrEmpty(herdrArg) ? herdrArg : (Environment.GetEnvironmentVariable("HERDR_BIN_PATH") ?? "");
         if (string.IsNullOrEmpty(_herdr))
         {
@@ -183,9 +234,13 @@ internal static class Program
                 locked = LockMutex(monitorMutex, 10000);
                 if (!locked) return;
                 Directory.CreateDirectory(_state);
-                try { File.WriteAllText(pidFile, Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture), Encoding.ASCII); } catch { }
+                int selfPid = Process.GetCurrentProcess().Id;
+                try { File.WriteAllText(pidFile, selfPid.ToString(CultureInfo.InvariantCulture), Encoding.ASCII); } catch { }
+                WriteLog(logFile, "monitor started pid=" + selfPid);
 
                 Dictionary<string, string> idleCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, string> stuckCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, DateTime> hotUntil = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
                 List<AgentEntry> cachedAgents = new List<AgentEntry>();
                 DateTime lastListAt = DateTime.MinValue;
                 int tick = 0;
@@ -195,7 +250,7 @@ internal static class Program
                     tick++;
                     try
                     {
-                        bool needRefresh = cachedAgents.Count == 0 || (DateTime.UtcNow - lastListAt).TotalSeconds >= 4.0;
+                        bool needRefresh = cachedAgents.Count == 0 || (DateTime.UtcNow - lastListAt).TotalSeconds >= 2.5;
                         if (needRefresh)
                         {
                             try
@@ -203,6 +258,20 @@ internal static class Program
                                 List<AgentEntry> fresh = GetSortedAgents();
                                 if (fresh.Count > 0)
                                 {
+                                    long topSeq1 = 0, topSeq2 = 0;
+                                    foreach (AgentEntry a in fresh)
+                                    {
+                                        if (a.Seq > topSeq1) { topSeq2 = topSeq1; topSeq1 = a.Seq; }
+                                        else if (a.Seq > topSeq2) { topSeq2 = a.Seq; }
+                                    }
+                                    DateTime hotExpiry = DateTime.UtcNow.AddSeconds(120);
+                                    foreach (AgentEntry a in fresh)
+                                    {
+                                        if (a.Focused || a.Status == "working" || a.Status == "blocked" || (a.Seq > 0 && a.Seq >= topSeq2))
+                                        {
+                                            hotUntil[a.PaneId] = hotExpiry;
+                                        }
+                                    }
                                     cachedAgents = fresh;
                                 }
                                 lastListAt = DateTime.UtcNow;
@@ -214,15 +283,20 @@ internal static class Program
                             }
                         }
 
+                        DateTime nowUtc = DateTime.UtcNow;
                         foreach (AgentEntry agent in cachedAgents)
                         {
                             if (!File.Exists(_flag)) break;
+                            string stateKey = agent.Status + ":" + agent.Seq + ":" + agent.Rev;
                             bool isIdleOrDone = (agent.Status == "idle" || agent.Status == "done");
-                            if (isIdleOrDone && !agent.Focused)
+                            DateTime expiry;
+                            bool isHot = agent.Focused || agent.Status == "working" || agent.Status == "blocked" ||
+                                         (hotUntil.TryGetValue(agent.PaneId, out expiry) && nowUtc < expiry);
+
+                            if (isIdleOrDone && !isHot)
                             {
-                                string stateKey = agent.Status + ":" + agent.Seq + ":" + agent.Rev;
                                 string prevKey;
-                                if (idleCache.TryGetValue(agent.PaneId, out prevKey) && prevKey == stateKey && (tick % 10) != 0)
+                                if (idleCache.TryGetValue(agent.PaneId, out prevKey) && prevKey == stateKey && (tick % 20) != 0)
                                 {
                                     continue;
                                 }
@@ -231,14 +305,26 @@ internal static class Program
                             else
                             {
                                 idleCache.Remove(agent.PaneId);
+                                string stuckKey;
+                                if (stuckCache.TryGetValue(agent.PaneId, out stuckKey) && stuckKey == stateKey && (tick % 15) != 0)
+                                {
+                                    continue;
+                                }
                             }
 
                             string scrapeHint = string.IsNullOrEmpty(agent.Status) ? "working" : agent.Status;
                             string result = ApprovePane(agent.PaneId, agent.Agent, scrapeHint);
-                            if (result == "1" || result == "0")
+                            if (result == "1")
                             {
                                 idleCache.Remove(agent.PaneId);
-                                WriteLog(logFile, "pane=" + agent.PaneId + " result=" + result);
+                                stuckCache.Remove(agent.PaneId);
+                                hotUntil[agent.PaneId] = DateTime.UtcNow.AddSeconds(120);
+                                WriteLog(logFile, "pane=" + agent.PaneId + " status=" + agent.Status + " result=1");
+                            }
+                            else if (result == "0")
+                            {
+                                stuckCache[agent.PaneId] = stateKey;
+                                WriteLog(logFile, "pane=" + agent.PaneId + " status=" + agent.Status + " result=0");
                             }
                         }
                     }
@@ -266,7 +352,17 @@ internal static class Program
     {
         try
         {
-            File.WriteAllText(logFile, DateTime.Now.ToString("o", CultureInfo.InvariantCulture) + " " + message + Environment.NewLine, Encoding.UTF8);
+            string line = DateTime.Now.ToString("o", CultureInfo.InvariantCulture) + " " + message + Environment.NewLine;
+            if (File.Exists(logFile))
+            {
+                FileInfo fi = new FileInfo(logFile);
+                if (fi.Length > 262144)
+                {
+                    File.WriteAllText(logFile, line, Encoding.UTF8);
+                    return;
+                }
+            }
+            File.AppendAllText(logFile, line, Encoding.UTF8);
         }
         catch { }
     }
@@ -334,13 +430,8 @@ internal static class Program
 
     private static Mutex NewPluginMutex(string name)
     {
-        string normalizedConfig = _config.TrimEnd('\\', '/').ToLowerInvariant();
-        using (SHA256 sha = SHA256.Create())
-        {
-            byte[] hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(normalizedConfig + "/" + name));
-            string hash = BitConverter.ToString(hashBytes).Replace("-", "");
-            return new Mutex(false, @"Local\herdr-approve-all-" + hash);
-        }
+        string safeName = (name ?? "").Replace('\\', '-').Replace('/', '-').Replace(':', '-');
+        return new Mutex(false, @"Local\herdr-approve-all-v3-" + safeName);
     }
 
     private static bool LockMutex(Mutex m, int timeoutMs)
@@ -417,34 +508,40 @@ internal static class Program
         if (TestMonitorRunning()) return;
         Directory.CreateDirectory(_state);
         string exePath = AssemblyPath();
-        string args = "monitor -ConfigDir \"" + _config + "\" -StateDir \"" + _state + "\" -HerdrBin \"" + _herdr + "\"";
+        string workDir = Path.GetDirectoryName(exePath) ?? Environment.CurrentDirectory;
+        string cmdLine = "\"" + exePath + "\" monitor -ConfigDir \"" + _config + "\" -StateDir \"" + _state + "\" -HerdrBin \"" + _herdr + "\"";
 
-        try
+        const uint CREATE_NO_WINDOW = 0x08000000;
+        const uint DETACHED_PROCESS = 0x00000008;
+        const uint CREATE_NEW_PROCESS_GROUP = 0x00000200;
+        const uint CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
+
+        uint[] flagOptions = new uint[]
         {
-            // Spawn via WMI so the worker runs under WmiPrvSE.exe outside any short-lived hook Job Object
-            string wmicArgs = "process call create \"\\\"" + exePath + "\\\" " + args.Replace("\"", "\\\"") + "\"";
-            ProcessStartInfo wmiPsi = new ProcessStartInfo("wmic.exe", wmicArgs);
-            wmiPsi.UseShellExecute = false;
-            wmiPsi.CreateNoWindow = true;
-            wmiPsi.RedirectStandardOutput = true;
-            wmiPsi.RedirectStandardError = true;
-            using (Process wmiProc = Process.Start(wmiPsi))
+            CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+            CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            CREATE_NO_WINDOW
+        };
+
+        foreach (uint flags in flagOptions)
+        {
+            STARTUPINFO si = new STARTUPINFO();
+            si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION pi;
+            StringBuilder sbCmd = new StringBuilder(cmdLine);
+            if (CreateProcessW(exePath, sbCmd, IntPtr.Zero, IntPtr.Zero, false, flags, IntPtr.Zero, workDir, ref si, out pi))
             {
-                if (wmiProc != null && wmiProc.WaitForExit(4000) && wmiProc.ExitCode == 0)
-                {
-                    string outText = wmiProc.StandardOutput.ReadToEnd();
-                    if (outText.IndexOf("ReturnValue = 0;", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        return;
-                    }
-                }
+                if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
+                if (pi.hProcess != IntPtr.Zero) CloseHandle(pi.hProcess);
+                return;
             }
         }
-        catch { }
 
+        string args = "monitor -ConfigDir \"" + _config + "\" -StateDir \"" + _state + "\" -HerdrBin \"" + _herdr + "\"";
         ProcessStartInfo psi = new ProcessStartInfo(exePath, args);
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;
+        psi.WorkingDirectory = workDir;
         Process.Start(psi);
     }
 
@@ -460,6 +557,7 @@ internal static class Program
         bool hasOpt1 = false;
         bool matched = false;
         bool inUserQuote = false;
+        bool afterRule = false;
 
         string[] lines = screen.Replace("\r\n", "\n").Split('\n');
         for (int i = 0; i < lines.Length; i++)
@@ -467,10 +565,18 @@ internal static class Program
             string line = lines[i];
             if (RxRule.IsMatch(line) && !RxBoxBorder.IsMatch(line))
             {
+                if (matched) return true;
                 inUserQuote = false;
+                afterRule = true;
                 continue;
             }
             if (RxEmptyQuote.IsMatch(line)) continue;
+            if (afterRule && RxAnyQuote.IsMatch(line))
+            {
+                afterRule = false;
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(line)) afterRule = false;
             if (RxResetActivity.IsMatch(line))
             {
                 hasCue = false;
@@ -529,7 +635,7 @@ internal static class Program
     {
         if (string.IsNullOrEmpty(screen)) return false;
         return Regex.IsMatch(screen, @"\u2500{20,}\r?\n\s*>\s*\r?\n\u2500{20,}") &&
-               Regex.IsMatch(screen, @"Running command\.\.\.|Reading file\.\.\.|Thinking\.\.\.|Press up to edit queued messages", RegexOptions.IgnoreCase);
+               Regex.IsMatch(screen, @"Running command\.\.\.|Reading file\.\.\.|Thinking\.\.\.|Loading\.\.\.|Press up to edit queued messages|\[\d{2}:\d{2}:\d{2}\].*\brunning\b", RegexOptions.IgnoreCase);
     }
 
     private static bool TestContinueNeeded(string screen)
@@ -634,7 +740,7 @@ internal static class Program
                 {
                     try
                     {
-                        string bScreen = InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 4000);
+                        string bScreen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 4000));
                         if (!string.IsNullOrEmpty(bScreen))
                         {
                             if (TestCtrlKNeeded(bScreen)) return "ctrl+k";
@@ -648,7 +754,7 @@ internal static class Program
                 return "approve";
             }
             if (Environment.GetEnvironmentVariable("APPROVE_SCRAPE_FALLBACK") == "0") return "";
-            string screen = InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 4000);
+            string screen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 4000));
             if (TestCtrlKNeeded(screen)) return "ctrl+k";
             if (TestPromptVisible(screen)) return "approve";
             if (TestContinueNeeded(screen)) return "continue";
@@ -830,10 +936,9 @@ internal static class Program
                         e.Seq = ExtractJsonLong(obj, "state_change_seq");
                         e.Rev = ExtractJsonLong(obj, "revision");
                         if (e.Status == "blocked") e.Rank = 0;
-                        else if (e.Status == "working" && e.Focused) e.Rank = 1;
-                        else if (e.Status == "working") e.Rank = 2;
-                        else if (e.Focused) e.Rank = 3;
-                        else e.Rank = 4;
+                        else if (e.Status == "working") e.Rank = 1;
+                        else if (e.Focused) e.Rank = 2;
+                        else e.Rank = 3;
                         list.Add(e);
                     }
                     objStart = -1;
@@ -845,14 +950,146 @@ internal static class Program
             }
         }
 
-        list.Sort((a, b) => a.Rank.CompareTo(b.Rank));
+        long topSeq1 = 0, topSeq2 = 0;
+        foreach (AgentEntry e in list)
+        {
+            if (e.Seq > topSeq1) { topSeq2 = topSeq1; topSeq1 = e.Seq; }
+            else if (e.Seq > topSeq2) { topSeq2 = e.Seq; }
+        }
+        foreach (AgentEntry e in list)
+        {
+            if (e.Status == "blocked") e.Rank = 0;
+            else if (e.Status == "working" || (e.Seq > 0 && e.Seq >= topSeq2)) e.Rank = 1;
+            else if (e.Focused) e.Rank = 2;
+            else e.Rank = 3;
+        }
+
+        list.Sort((a, b) =>
+        {
+            int cmp = a.Rank.CompareTo(b.Rank);
+            if (cmp != 0) return cmp;
+            return b.Seq.CompareTo(a.Seq);
+        });
         return list;
+    }
+
+    private static string ParseJsonStringLiteral(string json, int openQuoteIndex, out int closeQuoteIndex)
+    {
+        closeQuoteIndex = -1;
+        if (string.IsNullOrEmpty(json) || openQuoteIndex < 0 || openQuoteIndex >= json.Length || json[openQuoteIndex] != '"')
+        {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = openQuoteIndex + 1; i < json.Length; i++)
+        {
+            char c = json[i];
+            if (c == '"')
+            {
+                closeQuoteIndex = i;
+                return sb.ToString();
+            }
+            if (c == '\\' && i + 1 < json.Length)
+            {
+                char next = json[++i];
+                switch (next)
+                {
+                    case '"': sb.Append('"'); break;
+                    case '\\': sb.Append('\\'); break;
+                    case '/': sb.Append('/'); break;
+                    case 'b': sb.Append('\b'); break;
+                    case 'f': sb.Append('\f'); break;
+                    case 'n': sb.Append('\n'); break;
+                    case 'r': sb.Append('\r'); break;
+                    case 't': sb.Append('\t'); break;
+                    case 'u':
+                        if (i + 4 < json.Length)
+                        {
+                            string hex = json.Substring(i + 1, 4);
+                            int code;
+                            if (int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out code))
+                            {
+                                sb.Append((char)code);
+                                i += 4;
+                            }
+                        }
+                        break;
+                    default:
+                        sb.Append(next);
+                        break;
+                }
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static string NormalizeScreen(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return "";
+        string trimmed = raw.TrimStart();
+        if (!trimmed.StartsWith("{", StringComparison.Ordinal)) return raw;
+
+        Match linesMatch = Regex.Match(trimmed, "\"lines\"\\s*:\\s*\\[");
+        if (linesMatch.Success)
+        {
+            List<string> lines = new List<string>();
+            int idx = linesMatch.Index + linesMatch.Length;
+            while (idx < trimmed.Length)
+            {
+                char c = trimmed[idx];
+                if (c == ']') break;
+                if (c == '"')
+                {
+                    int closeIdx;
+                    string s = ParseJsonStringLiteral(trimmed, idx, out closeIdx);
+                    lines.Add(s);
+                    if (closeIdx < 0) break;
+                    idx = closeIdx + 1;
+                }
+                else
+                {
+                    idx++;
+                }
+            }
+            if (lines.Count > 0) return string.Join("\n", lines.ToArray());
+        }
+
+        string[] keys = new string[] { "text", "content", "output", "screen", "buffer", "data" };
+        foreach (string key in keys)
+        {
+            Match m = Regex.Match(trimmed, "\"" + key + "\"\\s*:\\s*\"");
+            if (m.Success)
+            {
+                int openQuote = m.Index + m.Length - 1;
+                int closeQuote;
+                return ParseJsonStringLiteral(trimmed, openQuote, out closeQuote);
+            }
+        }
+
+        MatchCollection mc = Regex.Matches(trimmed, "\"([A-Za-z0-9_]+)\"\\s*:\\s*\"");
+        foreach (Match m in mc)
+        {
+            string k = m.Groups[1].Value;
+            if (k == "id" || k == "type" || k == "pane_id" || k == "source" || k == "agent") continue;
+            int openQuote = m.Index + m.Length - 1;
+            int closeQuote;
+            return ParseJsonStringLiteral(trimmed, openQuote, out closeQuote);
+        }
+
+        return raw;
     }
 
     private static string ExtractJsonString(string json, string key)
     {
-        Match m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"([^\"]*)\"");
-        return m.Success ? m.Groups[1].Value : "";
+        Match m = Regex.Match(json, "\"" + Regex.Escape(key) + "\"\\s*:\\s*\"");
+        if (!m.Success) return "";
+        int openQuote = m.Index + m.Length - 1;
+        int closeQuote;
+        return ParseJsonStringLiteral(json, openQuote, out closeQuote);
     }
 
     private static long ExtractJsonLong(string json, string key)

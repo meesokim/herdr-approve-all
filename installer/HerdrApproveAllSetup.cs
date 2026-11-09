@@ -66,10 +66,14 @@ namespace HerdrApproveAllSetup
                 // Also sync to any existing github-installations directory if present
                 SyncExistingGithubInstallations(targetPluginDir);
 
-                // 4. Register local directory directly as plugin via `herdr plugin link`
+                // 4. Create auto-approve flag before linking so Herdr daemon's [[startup]] hook
+                // immediately launches dispatch.exe monitor in the Herdr daemon's own session
+                PrepareAutoApproveFlag();
+
+                // 5. Register local directory directly as plugin via `herdr plugin link`
                 RegisterLocalPluginInHerdr(herdrExe, targetPluginDir);
 
-                // 5. Turn ON auto-on-windows and verify background monitor
+                // 6. Verify background monitor is active (or start it if Herdr daemon is not running)
                 EnableAutoApproveWindows(herdrExe, targetPluginDir);
 
                 WriteHeader("Setup Completed Successfully! (auto-on-windows is ACTIVE)");
@@ -211,7 +215,6 @@ namespace HerdrApproveAllSetup
                 }
                 catch { }
             }
-            RunProcess("wmic.exe", "process where \"(name='powershell.exe' and commandline like '%approve-windows.ps1%monitor%') or (name='dispatch.exe' and commandline like '%monitor%')\" call terminate", 10000, false);
             try
             {
                 foreach (Process p in Process.GetProcessesByName("dispatch"))
@@ -290,10 +293,8 @@ namespace HerdrApproveAllSetup
             RunProcess(herdrExe, "plugin enable " + PluginId, 15000, false);
         }
 
-        private static void EnableAutoApproveWindows(string herdrExe, string targetPluginDir)
+        private static void PrepareAutoApproveFlag()
         {
-            Console.WriteLine("[4/4] Turning ON auto-on-windows and starting background monitor...");
-
             string configDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "herdr", "plugins", "config", PluginId
@@ -310,30 +311,34 @@ namespace HerdrApproveAllSetup
             {
                 File.WriteAllText(flagFile, string.Empty, Encoding.ASCII);
             }
+        }
 
-            // Start the native C# background monitor directly via scripts\dispatch.exe
-            string dispatchExe = Path.Combine(targetPluginDir, "scripts", "dispatch.exe");
-            if (File.Exists(dispatchExe))
-            {
-                string args = "on -ConfigDir \"" + configDir + "\" -StateDir \"" + stateDir + "\" -HerdrBin \"" + herdrExe + "\"";
-                RunProcess(dispatchExe, args, 10000, false);
-            }
+        private static void EnableAutoApproveWindows(string herdrExe, string targetPluginDir)
+        {
+            Console.WriteLine("[4/4] Turning ON auto-on-windows and starting background monitor...");
+
+            string configDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "herdr", "plugins", "config", PluginId
+            );
+            string stateDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "herdr", "plugins", PluginId
+            );
+            PrepareAutoApproveFlag();
 
             string pidFile = Path.Combine(stateDir, "monitor.pid");
-            string activePid = WaitForMonitorPid(pidFile, 20);
+            // Wait up to 2.5s for Herdr daemon's [[startup]] / [[events]] hook to start dispatch.exe monitor
+            string activePid = WaitForMonitorPid(pidFile, 16);
 
             if (string.IsNullOrEmpty(activePid))
             {
-                // Fallback to PowerShell script if dispatch.exe did not start monitor
-                string psExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe");
-                string scriptPath = Path.Combine(targetPluginDir, "scripts", "approve-windows.ps1");
-                if (File.Exists(scriptPath))
+                // Fallback when Herdr daemon is not running: start dispatch.exe on directly
+                string dispatchExe = Path.Combine(targetPluginDir, "scripts", "dispatch.exe");
+                if (File.Exists(dispatchExe))
                 {
-                    string args = "-NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath + "\" on" +
-                                  " -ConfigDir \"" + configDir + "\"" +
-                                  " -StateDir \"" + stateDir + "\"" +
-                                  " -HerdrBin \"" + herdrExe + "\"";
-                    RunProcess(psExe, args, 15000, false);
+                    string args = "on -ConfigDir \"" + configDir + "\" -StateDir \"" + stateDir + "\" -HerdrBin \"" + herdrExe + "\"";
+                    RunProcess(dispatchExe, args, 10000, false);
                 }
                 activePid = WaitForMonitorPid(pidFile, 20);
             }

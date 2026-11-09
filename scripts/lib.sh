@@ -45,15 +45,13 @@ $2"
 # with blocked (red) panes first, focused+working second, working third, focused fourth, and others fifth.
 list_sorted_agents() {
   run_herdr agent list 2>/dev/null | json_eval \
-    '(.result.agents // []) | sort_by(if .agent_status == "blocked" then 0 elif (.agent_status == "working" and .focused == true) then 1 elif .agent_status == "working" then 2 elif .focused == true then 3 else 4 end) | .[] | "\(.pane_id) \(if (.agent // "") == "" then "unknown" else .agent end) \(if (.agent_status // "") == "" then "?" else .agent_status end) \(.focused // false) \(.agent_status // "?"):\(.state_change_seq // 0):\(.revision // 0)"' \
+    '(.result.agents // []) | sort_by([ (if .agent_status == "blocked" then 0 elif .agent_status == "working" then 1 elif .focused == true then 2 else 3 end), -(.state_change_seq // 0) ]) | .[] | "\(.pane_id) \(if (.agent // "") == "" then "unknown" else .agent end) \(if (.agent_status // "") == "" then "?" else .agent_status end) \(.focused // false) \(.agent_status // "?"):\(.state_change_seq // 0):\(.revision // 0)"' \
     'def rank(x):
     st = x.get("agent_status", "")
     foc = bool(x.get("focused", False))
-    if st == "blocked": return 0
-    if st == "working" and foc: return 1
-    if st == "working": return 2
-    if foc: return 3
-    return 4
+    seq = int(x.get("state_change_seq") or 0)
+    r = 0 if st == "blocked" else (1 if st == "working" else (2 if foc else 3))
+    return (r, -seq)
 for a in sorted(d.get("result", {}).get("agents") or [], key=rank):
     st = a.get("agent_status") or "?"
     foc = "true" if a.get("focused") else "false"
@@ -121,6 +119,31 @@ agent_status() {
     'print(d.get("result", {}).get("agent", {}).get("agent_status", ""))'
 }
 
+read_pane_screen() {
+  local raw
+  raw=$(run_herdr agent read "$1" --source visible --lines 40 2>/dev/null) || return 1
+  case "$raw" in
+    \{*)
+      printf '%s\n' "$raw" | json_eval \
+        '(.result // .) | if type == "string" then . elif type == "array" then map(tostring) | join("\n") elif type == "object" then (if (.lines | type) == "array" then .lines | map(tostring) | join("\n") else (.text // .content // .output // .screen // .buffer // .data // ([to_entries[] | select(.key != "id" and .key != "type" and .key != "pane_id" and .key != "source" and .key != "agent" and (.value | type == "string")) | .value] | first) // "") end) else "" end' \
+        'r = d.get("result", d) if isinstance(d, dict) else d
+if isinstance(r, str): print(r, end="")
+elif isinstance(r, list): print("\n".join(str(x) for x in r), end="")
+elif isinstance(r, dict):
+    if isinstance(r.get("lines"), list): print("\n".join(str(x) for x in r["lines"]), end="")
+    else:
+        for k in ("text", "content", "output", "screen", "buffer", "data"):
+            if isinstance(r.get(k), str): print(r[k], end=""); break
+        else:
+            vals = [v for k, v in r.items() if k not in ("id", "type", "pane_id", "source", "agent") and isinstance(v, str)]
+            if vals: print(vals[0], end="")'
+      ;;
+    *)
+      printf '%s\n' "$raw"
+      ;;
+  esac
+}
+
 # screen_has_prompt <screen_text>: true when active screen shows a live dialog.
 # Supports both classic "esc to cancel" dialogs and agy permission menus
 # (sandbox bypass, outside-workspace file access, command execution) whether
@@ -129,12 +152,19 @@ agent_status() {
 screen_has_prompt() {
   [ -n "${1:-}" ] || return 1
   printf '%s\n' "$1" | tr -d '\r' | awk '
-    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0 }
+    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0; after_rule = 0 }
     index($0, rule) > 0 && $0 !~ /^[[:space:]]*(┃|│|\|)/ {
+      if (matched) exit 0
       in_quote = 0
+      after_rule = 1
       next
     }
     /^[[:space:]]*>[[:space:]]*$/ { next }
+    after_rule && /^[[:space:]]*>/ {
+      after_rule = 0
+      next
+    }
+    !/^[[:space:]]*$/ { after_rule = 0 }
     /([Rr]unning command\.\.\.|[Rr]eading file\.\.\.|[Ee]diting file|[Tt]hinking\.\.\.|[Ll]oading\.\.\.|[Tt]hought for [0-9]|[0-9.]+k[[:space:]]+in[[:space:]]*\||Conversation compacted)/ {
       has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0
       next
@@ -265,7 +295,7 @@ pane_action() {
   fi
   if [ "$status" = "blocked" ]; then
     if [ "$APPROVE_SCRAPE_FALLBACK" = "1" ]; then
-      out=$(run_herdr agent read "$pane" --source visible --lines 40 2>/dev/null || true)
+      out=$(read_pane_screen "$pane" 2>/dev/null || true)
       if [ -n "$out" ]; then
         if screen_needs_ctrl_k "$out"; then
           printf 'ctrl+k'
@@ -288,7 +318,7 @@ pane_action() {
     return 0
   fi
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$pane" --source visible --lines 40 2>/dev/null) || return 1
+  out=$(read_pane_screen "$pane" 2>/dev/null) || return 1
   if screen_needs_ctrl_k "$out"; then
     printf 'ctrl+k'
     return 0
@@ -307,21 +337,21 @@ pane_action() {
 prompt_visible() {
   local out
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$1" --source visible --lines 40 2>/dev/null) || return 1
+  out=$(read_pane_screen "$1" 2>/dev/null) || return 1
   screen_has_prompt "$out"
 }
 
 ctrl_k_needed() {
   local out
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$1" --source visible --lines 40 2>/dev/null) || return 1
+  out=$(read_pane_screen "$1" 2>/dev/null) || return 1
   screen_needs_ctrl_k "$out"
 }
 
 continue_needed() {
   local out
   [ "$APPROVE_SCRAPE_FALLBACK" = "1" ] || return 1
-  out=$(run_herdr agent read "$1" --source visible --lines 40 2>/dev/null) || return 1
+  out=$(read_pane_screen "$1" 2>/dev/null) || return 1
   screen_needs_continue "$out"
 }
 
