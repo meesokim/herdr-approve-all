@@ -258,16 +258,17 @@ internal static class Program
                                 List<AgentEntry> fresh = GetSortedAgents();
                                 if (fresh.Count > 0)
                                 {
-                                    long topSeq1 = 0, topSeq2 = 0;
+                                    List<long> seqs = new List<long>();
                                     foreach (AgentEntry a in fresh)
                                     {
-                                        if (a.Seq > topSeq1) { topSeq2 = topSeq1; topSeq1 = a.Seq; }
-                                        else if (a.Seq > topSeq2) { topSeq2 = a.Seq; }
+                                        if (a.Seq > 0) seqs.Add(a.Seq);
                                     }
-                                    DateTime hotExpiry = DateTime.UtcNow.AddSeconds(120);
+                                    seqs.Sort((x, y) => y.CompareTo(x));
+                                    long hotSeqCutoff = seqs.Count > 0 ? seqs[Math.Min(5, seqs.Count - 1)] : 0;
+                                    DateTime hotExpiry = DateTime.UtcNow.AddSeconds(300);
                                     foreach (AgentEntry a in fresh)
                                     {
-                                        if (a.Focused || a.Status == "working" || a.Status == "blocked" || (a.Seq > 0 && a.Seq >= topSeq2))
+                                        if (a.Focused || a.Status == "working" || a.Status == "blocked" || (a.Seq > 0 && a.Seq >= hotSeqCutoff))
                                         {
                                             hotUntil[a.PaneId] = hotExpiry;
                                         }
@@ -724,6 +725,72 @@ internal static class Program
         return matched && (box == 0 || box == 1 || box == 3);
     }
 
+    private static bool TestSurveySkipNeeded(string screen)
+    {
+        if (string.IsNullOrEmpty(screen)) return false;
+        bool hasHeader = false;
+        bool matched = false;
+        bool inUserQuote = false;
+        bool afterRule = false;
+        Regex activityRx = new Regex(@"Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|Conversation compacted", RegexOptions.IgnoreCase);
+        string[] lines = screen.Replace("\r\n", "\n").Split('\n');
+        foreach (string line in lines)
+        {
+            if (RxRule.IsMatch(line) && !RxBoxBorder.IsMatch(line))
+            {
+                if (matched) return true;
+                inUserQuote = false;
+                afterRule = true;
+                continue;
+            }
+            if (RxEmptyQuote.IsMatch(line)) continue;
+            if (afterRule && RxAnyQuote.IsMatch(line))
+            {
+                afterRule = false;
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(line)) afterRule = false;
+            if (activityRx.IsMatch(line))
+            {
+                hasHeader = false;
+                matched = false;
+                inUserQuote = false;
+                continue;
+            }
+            if (RxAnyQuote.IsMatch(line))
+            {
+                inUserQuote = true;
+                hasHeader = false;
+                matched = false;
+                continue;
+            }
+            if (inUserQuote)
+            {
+                if (string.IsNullOrWhiteSpace(line) || (RxIndentedNonBullet.IsMatch(line) && !RxBulletOrBox.IsMatch(line)))
+                {
+                    continue;
+                }
+                inUserQuote = false;
+            }
+            if (Regex.IsMatch(line, @"How's the CLI experience so far\?", RegexOptions.IgnoreCase))
+            {
+                hasHeader = true;
+                if (Regex.IsMatch(line, @"\[0\]\s*Skip", RegexOptions.IgnoreCase)) matched = true;
+                continue;
+            }
+            if (hasHeader && Regex.IsMatch(line, @"\[0\]\s*Skip", RegexOptions.IgnoreCase))
+            {
+                matched = true;
+                continue;
+            }
+            if (!matched && hasHeader && !string.IsNullOrWhiteSpace(line))
+            {
+                hasHeader = false;
+            }
+        }
+        return matched;
+    }
+
     private static string GetPaneAction(string pane, string knownStatus)
     {
         try
@@ -744,6 +811,7 @@ internal static class Program
                         if (!string.IsNullOrEmpty(bScreen))
                         {
                             if (TestCtrlKNeeded(bScreen)) return "ctrl+k";
+                            if (TestSurveySkipNeeded(bScreen)) return "0";
                             if (TestPromptVisible(bScreen)) return "approve";
                             if (TestContinueNeeded(bScreen)) return "continue";
                             if (TestFalseBlockedScreen(bScreen)) return "";
@@ -756,6 +824,7 @@ internal static class Program
             if (Environment.GetEnvironmentVariable("APPROVE_SCRAPE_FALLBACK") == "0") return "";
             string screen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 4000));
             if (TestCtrlKNeeded(screen)) return "ctrl+k";
+            if (TestSurveySkipNeeded(screen)) return "0";
             if (TestPromptVisible(screen)) return "approve";
             if (TestContinueNeeded(screen)) return "continue";
             return "";
@@ -838,12 +907,12 @@ internal static class Program
                         break;
                     }
 
-                    if (action == "ctrl+k")
+                    if (action == "ctrl+k" || action == "0")
                     {
-                        try { InvokeHerdr(new string[] { "agent", "send-keys", pane, "ctrl+k" }, 4000); }
+                        try { InvokeHerdr(new string[] { "agent", "send-keys", pane, action }, 4000); }
                         catch { break; }
                         sent++;
-                        lastAction = "ctrl+k";
+                        lastAction = action;
                         if (hint == "blocked")
                         {
                             try { InvokeHerdr(new string[] { "agent", "wait", pane, "--until", "idle", "--until", "working", "--until", "done", "--timeout", timeout.ToString(CultureInfo.InvariantCulture) }, Math.Max(2000, timeout + 1500)); } catch { }
@@ -881,7 +950,7 @@ internal static class Program
                 if (sent == 0) return "-";
                 if (cleared || lastAction == "continue") return "1";
                 string remaining = GetPaneAction(pane, "");
-                if (remaining == "approve" || remaining == "ctrl+k") return "0";
+                if (remaining == "approve" || remaining == "ctrl+k" || remaining == "0") return "0";
                 return "1";
             }
             finally
@@ -950,16 +1019,17 @@ internal static class Program
             }
         }
 
-        long topSeq1 = 0, topSeq2 = 0;
+        List<long> seqs = new List<long>();
         foreach (AgentEntry e in list)
         {
-            if (e.Seq > topSeq1) { topSeq2 = topSeq1; topSeq1 = e.Seq; }
-            else if (e.Seq > topSeq2) { topSeq2 = e.Seq; }
+            if (e.Seq > 0) seqs.Add(e.Seq);
         }
+        seqs.Sort((x, y) => y.CompareTo(x));
+        long hotSeqCutoff = seqs.Count > 0 ? seqs[Math.Min(5, seqs.Count - 1)] : 0;
         foreach (AgentEntry e in list)
         {
             if (e.Status == "blocked") e.Rank = 0;
-            else if (e.Status == "working" || (e.Seq > 0 && e.Seq >= topSeq2)) e.Rank = 1;
+            else if (e.Status == "working" || (e.Seq > 0 && e.Seq >= hotSeqCutoff)) e.Rank = 1;
             else if (e.Focused) e.Rank = 2;
             else e.Rank = 3;
         }

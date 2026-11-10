@@ -186,7 +186,21 @@ $rule
     if ((Send-Count) -ne 9) { throw 'sweep did not send ctrl+k on subagent approval screen' }
     if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne 'ctrl+k') { throw 'sweep did not send ctrl+k key' }
 
-    # Verify normal working screen with markdown list + quoted network/stream error + quoted ctrl+k banner + composer box does NOT false-trigger.
+    # Verify CLI feedback survey ("How's the CLI experience so far? Help us improve:" / "[1] Good  [2] Fine  [3] Bad  [0] Skip") sends "0".
+    $surveyScreen = @"
+How's the CLI experience so far? Help us improve:
+ [1] Good  [2] Fine  [3] Bad  [0] Skip
+$rule
+>
+$rule
+? for shortcuts                               accept-edits
+"@
+    [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $surveyScreen, [Text.Encoding]::UTF8)
+    & $script sweep
+    if ((Send-Count) -ne 10) { throw 'sweep did not send 0 on CLI experience survey screen' }
+    if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne '0') { throw 'sweep did not send 0 key' }
+
+    # Verify normal working screen with markdown list + quoted network/stream error + quoted ctrl+k banner + quoted survey + composer box does NOT false-trigger.
     $workingScreen = @"
   1. First normal markdown list item in scrollback
   2. Second normal markdown list item in scrollback
@@ -205,6 +219,8 @@ $rule
     Allow access to this file?
     > 1. Yes, allow access
       2. No, deny access
+  > How's the CLI experience so far? Help us improve:
+   [1] Good  [2] Fine  [3] Bad  [0] Skip
   > $warn There was a network issue connecting to the server, please try again.
     Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
   > $warn agent executor error: generating and executing: stream reading error: stream idle timeout (5m0s): context deadline exceeded
@@ -223,7 +239,7 @@ esc to cancel                               accept-edits
 "@
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $workingScreen, [Text.Encoding]::UTF8)
     & $script sweep
-    if ((Send-Count) -ne 9) { throw 'sweep falsely triggered on normal working screen with scrollback' }
+    if ((Send-Count) -ne 10) { throw 'sweep falsely triggered on normal working screen with scrollback' }
     Remove-Item -LiteralPath (Join-Path $tmp 'fallback_screen.txt') -Force -ErrorAction SilentlyContinue
 
     & $script on
@@ -234,13 +250,13 @@ esc to cancel                               accept-edits
     # No event is dispatched for any of these prompts, including a prompt whose
     # semantic status stays working. The same worker must handle every wave.
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 10 } 'first automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 11 } 'first automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'first prompt did not settle'
     Set-Content (Join-Path $tmp 'pending') ''
-    Wait-Until { (Send-Count) -ge 11 } 'second automatic prompt was missed'
+    Wait-Until { (Send-Count) -ge 12 } 'second automatic prompt was missed'
     Wait-Until { -not (Test-Path (Join-Path $tmp 'pending')) } 'second prompt did not settle'
     Set-Content (Join-Path $tmp 'fallback') ''
-    Wait-Until { (Send-Count) -ge 12 } 'prompt reported as working was missed'
+    Wait-Until { (Send-Count) -ge 13 } 'prompt reported as working was missed'
     & $script startup
     if ((Read-PidFile $pidFile) -ne $workerPid) { throw 'startup replaced an active monitor' }
     & $script off

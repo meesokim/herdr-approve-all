@@ -277,6 +277,59 @@ function Test-CtrlKNeeded([string]$Screen) {
     }
     return ($matched -and ($box -eq 0 -or $box -eq 1 -or $box -eq 3))
 }
+function Test-SurveySkipNeeded([string]$Screen) {
+    if (-not $Screen) { return $false }
+    $rule = [string][char]0x2500
+    $hasHeader = $false
+    $matched = $false
+    $inUserQuote = $false
+    $afterRule = $false
+    foreach ($line in ($Screen -split "\r?\n")) {
+        if ($line -match ('^\s*' + $rule + '{10,}\s*$') -and $line -notmatch '^\s*[\u2503\u2502|]') {
+            if ($matched) { return $true }
+            $inUserQuote = $false
+            $afterRule = $true
+            continue
+        }
+        if ($line -match '^\s*>\s*$') { continue }
+        if ($afterRule -and $line -match '^\s*>') {
+            $afterRule = $false
+            continue
+        }
+        if ($line -notmatch '^\s*$') { $afterRule = $false }
+        if ($line -match '(?i)Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|Conversation compacted') {
+            $hasHeader = $false
+            $matched = $false
+            $inUserQuote = $false
+            continue
+        }
+        if ($line -match '^\s*>') {
+            $inUserQuote = $true
+            $hasHeader = $false
+            $matched = $false
+            continue
+        }
+        if ($inUserQuote) {
+            if ($line -match '^\s*$' -or ($line -match '^\s+' -and $line -notmatch '^\s*[\u2503\u2502|\u25cf\u25cb\u273b]')) {
+                continue
+            }
+            $inUserQuote = $false
+        }
+        if ($line -match '(?i)How''s the CLI experience so far\?') {
+            $hasHeader = $true
+            if ($line -match '(?i)\[0\]\s*Skip') { $matched = $true }
+            continue
+        }
+        if ($hasHeader -and $line -match '(?i)\[0\]\s*Skip') {
+            $matched = $true
+            continue
+        }
+        if (-not $matched -and $hasHeader -and $line -notmatch '^\s*$') {
+            $hasHeader = $false
+        }
+    }
+    return $matched
+}
 function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
     try {
         $status = if ($KnownStatus) { $KnownStatus } else {
@@ -288,6 +341,7 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
                     $bScreen = Normalize-Screen (Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40'))
                     if ($bScreen) {
                         if (Test-CtrlKNeeded $bScreen) { return 'ctrl+k' }
+                        if (Test-SurveySkipNeeded $bScreen) { return '0' }
                         if (Test-PromptVisible $bScreen) { return 'approve' }
                         if (Test-ContinueNeeded $bScreen) { return 'continue' }
                         if (Test-FalseBlockedScreen $bScreen) { return '' }
@@ -299,6 +353,7 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
         if ($env:APPROVE_SCRAPE_FALLBACK -eq '0') { return '' }
         $screen = Normalize-Screen (Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40'))
         if (Test-CtrlKNeeded $screen) { return 'ctrl+k' }
+        if (Test-SurveySkipNeeded $screen) { return '0' }
         if (Test-PromptVisible $screen) { return 'approve' }
         if (Test-ContinueNeeded $screen) { return 'continue' }
         return ''
@@ -361,10 +416,10 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
                 $cleared = $true
                 break
             }
-            if ($action -eq 'ctrl+k') {
-                try { $null = Invoke-Herdr @('agent','send-keys',$Pane,'ctrl+k') } catch { break }
+            if ($action -eq 'ctrl+k' -or $action -eq '0') {
+                try { $null = Invoke-Herdr @('agent','send-keys',$Pane,$action) } catch { break }
                 $sent++
-                $lastAction = 'ctrl+k'
+                $lastAction = $action
                 if ($hint -eq 'blocked') {
                     try { $null = Invoke-Herdr @('agent','wait',$Pane,'--until','idle','--until','working','--until','done','--timeout',"$timeout") ([Math]::Max(2000, $timeout + 1500)) } catch { }
                 }
@@ -384,7 +439,7 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
         if ($sent -eq 0) { return '-' }
         if ($cleared -or $lastAction -eq 'continue') { return '1' }
         $remaining = Get-PaneAction $Pane
-        if ($remaining -eq 'approve' -or $remaining -eq 'ctrl+k') { return '0' }
+        if ($remaining -eq 'approve' -or $remaining -eq 'ctrl+k' -or $remaining -eq '0') { return '0' }
         return '1'
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
 }

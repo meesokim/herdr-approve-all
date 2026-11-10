@@ -199,7 +199,20 @@ bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "9" ] || { echo "sweep did not send ctrl+k on subagent approval screen" >&2; exit 1; }
 [ "$(tail -n 1 "$TMP/sent")" = "ctrl+k" ] || { echo "sweep did not send ctrl+k key" >&2; exit 1; }
 
-# Verify normal working screen with markdown list + quoted network/stream error + quoted ctrl+k banner + composer box does NOT false-trigger.
+# Verify CLI feedback survey ("How's the CLI experience so far? Help us improve:" / "[1] Good  [2] Fine  [3] Bad  [0] Skip") sends "0".
+cat > "$TMP/fallback_screen.txt" << 'EOF'
+How's the CLI experience so far? Help us improve:
+ [1] Good  [2] Fine  [3] Bad  [0] Skip
+────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────
+? for shortcuts                               accept-edits
+EOF
+bash "$ROOT/scripts/approve-blocked.sh"
+[ "$(send_count)" = "10" ] || { echo "sweep did not send 0 on CLI experience survey screen" >&2; exit 1; }
+[ "$(tail -n 1 "$TMP/sent")" = "0" ] || { echo "sweep did not send 0 key" >&2; exit 1; }
+
+# Verify normal working screen with markdown list + quoted network/stream error + quoted ctrl+k banner + quoted survey + composer box does NOT false-trigger.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
   1. First normal markdown list item in scrollback
   2. Second normal markdown list item in scrollback
@@ -218,6 +231,8 @@ cat > "$TMP/fallback_screen.txt" << 'EOF'
     Allow access to this file?
     > 1. Yes, allow access
       2. No, deny access
+  > How's the CLI experience so far? Help us improve:
+   [1] Good  [2] Fine  [3] Bad  [0] Skip
   > ⚠ There was a network issue connecting to the server, please try again.
     Error ID: 4e1156e0-393c-4a95-a07c-c79c7e8ec0bb-937
   > ⚠ agent executor error: generating and executing: stream reading error: stream idle timeout (5m0s): context deadline exceeded
@@ -235,7 +250,7 @@ Running command...
 esc to cancel                               accept-edits
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
-[ "$(send_count)" = "9" ] || { echo "sweep falsely triggered on normal working screen" >&2; exit 1; }
+[ "$(send_count)" = "10" ] || { echo "sweep falsely triggered on normal working screen" >&2; exit 1; }
 rm -f "$TMP/fallback_screen.txt"
 
 # Verify background monitor in auto mode handles blocked and working prompts without events.
@@ -245,11 +260,11 @@ wait_until '[ -f "$TMP/state/monitor.pid" ]' 'monitor did not start'
 WORKER_PID="$(cat "$TMP/state/monitor.pid")"
 
 : > "$TMP/pending"
-wait_until '[ "$(send_count)" -ge 10 ]' 'first automatic prompt was missed'
+wait_until '[ "$(send_count)" -ge 11 ]' 'first automatic prompt was missed'
 wait_until '[ ! -f "$TMP/pending" ]' 'first prompt did not settle'
 
 : > "$TMP/fallback"
-wait_until '[ "$(send_count)" -ge 11 ]' 'prompt reported as working was missed'
+wait_until '[ "$(send_count)" -ge 12 ]' 'prompt reported as working was missed'
 
 bash "$ROOT/scripts/auto-toggle.sh" off
 [ ! -f "$TMP/auto-approve" ] || { echo "off did not remove flag" >&2; exit 1; }

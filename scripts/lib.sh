@@ -285,7 +285,58 @@ screen_needs_ctrl_k() {
   '
 }
 
-# pane_action <pane> [known_status]: prints "approve", "ctrl+k", "continue", or nothing.
+# screen_needs_survey_skip <screen_text>: true when CLI feedback survey
+# ("How's the CLI experience so far? Help us improve:" / "[1] Good  [2] Fine  [3] Bad  [0] Skip")
+# is waiting on screen, ignoring user-quoted (> ...) text in scrollback.
+screen_needs_survey_skip() {
+  [ -n "${1:-}" ] || return 1
+  printf '%s\n' "$1" | tr -d '\r' | awk '
+    BEGIN { rule = "──────────"; has_header = 0; matched = 0; in_quote = 0; after_rule = 0 }
+    index($0, rule) > 0 && $0 !~ /^[[:space:]]*(┃|│|\|)/ {
+      if (matched) exit 0
+      in_quote = 0
+      after_rule = 1
+      next
+    }
+    /^[[:space:]]*>[[:space:]]*$/ { next }
+    after_rule && /^[[:space:]]*>/ {
+      after_rule = 0
+      next
+    }
+    !/^[[:space:]]*$/ { after_rule = 0 }
+    /Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for [0-9]|Conversation compacted/ {
+      has_header = 0
+      matched = 0
+      in_quote = 0
+      next
+    }
+    /^[[:space:]]*>/ {
+      in_quote = 1
+      has_header = 0
+      matched = 0
+      next
+    }
+    in_quote {
+      if (/^[[:space:]]*$/ || (/^[[:space:]]+/ && $0 !~ /^[[:space:]]*(┃|│|\||●|○|✻)/)) next
+      in_quote = 0
+    }
+    /[Hh]ow'\''s the CLI experience so far\?/ {
+      has_header = 1
+      if (/\[0\][[:space:]]*[Ss]kip/) matched = 1
+      next
+    }
+    has_header && /\[0\][[:space:]]*[Ss]kip/ {
+      matched = 1
+      next
+    }
+    !matched && has_header && !/^[[:space:]]*$/ {
+      has_header = 0
+    }
+    END { exit (matched ? 0 : 1) }
+  '
+}
+
+# pane_action <pane> [known_status]: prints "approve", "ctrl+k", "0", "continue", or nothing.
 # Reuses known_status when provided so blocked panes send keys immediately and
 # working/idle panes perform only a single "agent read" call.
 pane_action() {
@@ -299,6 +350,10 @@ pane_action() {
       if [ -n "$out" ]; then
         if screen_needs_ctrl_k "$out"; then
           printf 'ctrl+k'
+          return 0
+        fi
+        if screen_needs_survey_skip "$out"; then
+          printf '0'
           return 0
         fi
         if screen_has_prompt "$out"; then
@@ -321,6 +376,10 @@ pane_action() {
   out=$(read_pane_screen "$pane" 2>/dev/null) || return 1
   if screen_needs_ctrl_k "$out"; then
     printf 'ctrl+k'
+    return 0
+  fi
+  if screen_needs_survey_skip "$out"; then
+    printf '0'
     return 0
   fi
   if screen_has_prompt "$out"; then
@@ -395,10 +454,10 @@ approve_pane() {
       cleared=1
       break
     fi
-    if [ "$action" = "ctrl+k" ]; then
-      run_herdr agent send-keys "$pane" ctrl+k >/dev/null 2>&1 || break
+    if [ "$action" = "ctrl+k" ] || [ "$action" = "0" ]; then
+      run_herdr agent send-keys "$pane" "$action" >/dev/null 2>&1 || break
       sent=$((sent + 1))
-      last_action="ctrl+k"
+      last_action="$action"
       if [ "$hint" = "blocked" ]; then
         run_herdr agent wait "$pane" --until idle --until working --until done \
           --timeout "$APPROVE_LEAVE_TIMEOUT_MS" >/dev/null 2>&1 || true
@@ -430,7 +489,7 @@ approve_pane() {
     printf 1
   else
     remaining=$(pane_action "$pane" || true)
-    if [ "$remaining" = "approve" ] || [ "$remaining" = "ctrl+k" ]; then
+    if [ "$remaining" = "approve" ] || [ "$remaining" = "ctrl+k" ] || [ "$remaining" = "0" ]; then
       printf 0
     else
       printf 1
