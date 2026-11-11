@@ -732,7 +732,8 @@ internal static class Program
         bool matched = false;
         bool inUserQuote = false;
         bool afterRule = false;
-        Regex activityRx = new Regex(@"Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|Conversation compacted", RegexOptions.IgnoreCase);
+        Regex headerRx = new Regex(@"^\s*(?:[\u2503\u2502|\u25cf]\s*)?How's the CLI experience so far\?\s*Help us improve:\s*$", RegexOptions.IgnoreCase);
+        Regex optRx = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?\[1\]\s*Good\s+\[2\]\s*Fine\s+\[3\]\s*Bad\s+\[0\]\s*Skip\s*$", RegexOptions.IgnoreCase);
         string[] lines = screen.Replace("\r\n", "\n").Split('\n');
         foreach (string line in lines)
         {
@@ -750,13 +751,6 @@ internal static class Program
                 continue;
             }
             if (!string.IsNullOrWhiteSpace(line)) afterRule = false;
-            if (activityRx.IsMatch(line))
-            {
-                hasHeader = false;
-                matched = false;
-                inUserQuote = false;
-                continue;
-            }
             if (RxAnyQuote.IsMatch(line))
             {
                 inUserQuote = true;
@@ -772,20 +766,22 @@ internal static class Program
                 }
                 inUserQuote = false;
             }
-            if (Regex.IsMatch(line, @"How's the CLI experience so far\?", RegexOptions.IgnoreCase))
+            if (headerRx.IsMatch(line))
             {
                 hasHeader = true;
-                if (Regex.IsMatch(line, @"\[0\]\s*Skip", RegexOptions.IgnoreCase)) matched = true;
+                matched = false;
                 continue;
             }
-            if (hasHeader && Regex.IsMatch(line, @"\[0\]\s*Skip", RegexOptions.IgnoreCase))
+            if (hasHeader && optRx.IsMatch(line))
             {
                 matched = true;
+                hasHeader = false;
                 continue;
             }
-            if (!matched && hasHeader && !string.IsNullOrWhiteSpace(line))
+            if (!string.IsNullOrWhiteSpace(line))
             {
                 hasHeader = false;
+                matched = false;
             }
         }
         return matched;

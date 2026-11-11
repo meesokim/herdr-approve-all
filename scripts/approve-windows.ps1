@@ -297,12 +297,6 @@ function Test-SurveySkipNeeded([string]$Screen) {
             continue
         }
         if ($line -notmatch '^\s*$') { $afterRule = $false }
-        if ($line -match '(?i)Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|Conversation compacted') {
-            $hasHeader = $false
-            $matched = $false
-            $inUserQuote = $false
-            continue
-        }
         if ($line -match '^\s*>') {
             $inUserQuote = $true
             $hasHeader = $false
@@ -315,17 +309,19 @@ function Test-SurveySkipNeeded([string]$Screen) {
             }
             $inUserQuote = $false
         }
-        if ($line -match '(?i)How''s the CLI experience so far\?') {
+        if ($line -match '(?i)^\s*(?:[\u2503\u2502|\u25cf]\s*)?How''s the CLI experience so far\?\s*Help us improve:\s*$') {
             $hasHeader = $true
-            if ($line -match '(?i)\[0\]\s*Skip') { $matched = $true }
+            $matched = $false
             continue
         }
-        if ($hasHeader -and $line -match '(?i)\[0\]\s*Skip') {
+        if ($hasHeader -and $line -match '(?i)^\s*(?:[\u2503\u2502|]\s*)?\[1\]\s*Good\s+\[2\]\s*Fine\s+\[3\]\s*Bad\s+\[0\]\s*Skip\s*$') {
             $matched = $true
+            $hasHeader = $false
             continue
         }
-        if (-not $matched -and $hasHeader -and $line -notmatch '^\s*$') {
+        if ($line -notmatch '^\s*$') {
             $hasHeader = $false
+            $matched = $false
         }
     }
     return $matched

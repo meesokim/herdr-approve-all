@@ -304,12 +304,6 @@ screen_needs_survey_skip() {
       next
     }
     !/^[[:space:]]*$/ { after_rule = 0 }
-    /Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for [0-9]|Conversation compacted/ {
-      has_header = 0
-      matched = 0
-      in_quote = 0
-      next
-    }
     /^[[:space:]]*>/ {
       in_quote = 1
       has_header = 0
@@ -320,17 +314,19 @@ screen_needs_survey_skip() {
       if (/^[[:space:]]*$/ || (/^[[:space:]]+/ && $0 !~ /^[[:space:]]*(┃|│|\||●|○|✻)/)) next
       in_quote = 0
     }
-    /[Hh]ow'\''s the CLI experience so far\?/ {
+    /^[[:space:]]*((┃|│|\||●)[[:space:]]*)?[Hh]ow'\''s the CLI experience so far\?[[:space:]]*[Hh]elp us improve:[[:space:]]*$/ {
       has_header = 1
-      if (/\[0\][[:space:]]*[Ss]kip/) matched = 1
+      matched = 0
       next
     }
-    has_header && /\[0\][[:space:]]*[Ss]kip/ {
+    has_header && /^[[:space:]]*((┃|│|\|)[[:space:]]*)?\[1\][[:space:]]*[Gg]ood[[:space:]]+\[2\][[:space:]]*[Ff]ine[[:space:]]+\[3\][[:space:]]*[Bb]ad[[:space:]]+\[0\][[:space:]]*[Ss]kip[[:space:]]*$/ {
       matched = 1
+      has_header = 0
       next
     }
-    !matched && has_header && !/^[[:space:]]*$/ {
+    !/^[[:space:]]*$/ {
       has_header = 0
+      matched = 0
     }
     END { exit (matched ? 0 : 1) }
   '
