@@ -18,7 +18,8 @@ Works with any agent herdr detects; the confirm key defaults to `Enter`, which
 accepts the highlighted default in Claude Code, Codex, Gemini CLI, Antigravity
 (`agy`), and the rest of herdr's supported agents. When a subagent approval
 banner is shown (`needs approval for ...` / `ctrl+k approve · alt+j manage`),
-the plugin sends `ctrl+k`. When an agent stops on transient server or stream
+the plugin sends `ctrl+k`, including when a subagent tray (`↓ N more`) sits
+under it. When an agent stops on transient server or stream
 errors (`There was a network issue connecting to the server, please try again.`
 or `agent executor error: ... stream reading error: stream idle timeout ... context deadline exceeded`),
 the plugin automatically submits `continue` to resume the interrupted turn.

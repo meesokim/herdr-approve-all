@@ -165,6 +165,10 @@ screen_needs_run_yes "$run_above_box" || { echo "run-command prompt above the co
 grok_run=$'     ❯ Run this command?\n       > 1. Yes, run command\n────────────────────────────────────────────────────────────\n>\n────────────────────────────────────────────────────────────\n'
 screen_needs_run_yes "$grok_run" && { echo "transcript run-command text was treated as a live dialog" >&2; exit 1; }
 screen_has_prompt "$grok_run" && { echo "transcript run-command text was treated as a generic prompt" >&2; exit 1; }
+grok_banner=$'     ❯ ┃ ctrl+k approve · alt+j manage\n────────────────────────────────────────────────────────────\n>\n────────────────────────────────────────────────────────────\n'
+screen_needs_ctrl_k "$grok_banner" && { echo "transcript ctrl+k banner was treated as live" >&2; exit 1; }
+live_banner=$' ┃ self needs approval for Bash\n ┃ ctrl+k approve · alt+j manage\n  ● Agent(self: writer)  Blocked · Bash · 2m\n  ↓ 1 more\n'
+screen_needs_ctrl_k "$live_banner" || { echo "subagent tray hid the ctrl+k banner" >&2; exit 1; }
 quoted_screen=$'  > Accept this file edit?\n    > 1. Yes, accept this change\n      2. No, reject this change\n'
 screen_needs_file_yes "$quoted_screen" && { echo "quoted file edit prompt was treated as live" >&2; exit 1; }
 grok_screen=$'     ❯ Accept this file edit?\n       > 1. Yes, accept this change\n  f full diff\n────────────────────────────────────────────────────────────\n>\n────────────────────────────────────────────────────────────\n'
@@ -212,6 +216,8 @@ cat > "$TMP/fallback_screen.txt" << 'EOF'
  ┃ ● Read(~/KDH/skills/mcp/server.py)
  ┃
  ┃ ctrl+k approve · alt+j manage
+  ● Agent(self: Blog Writer Chunk 1)  Blocked · Bash · 2m12s
+  ↓ 1 more
 ───────────────────────────────────
 ? for shortcuts                               accept-edits · 1 subagent(s)
 EOF

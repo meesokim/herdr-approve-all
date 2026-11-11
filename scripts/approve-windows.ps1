@@ -263,13 +263,13 @@ function Test-CtrlKNeeded([string]$Screen) {
         if ($line -match '(?i)\bneeds approval(?:\s+for)?\b') {
             $hasHeader = $true
         }
-        if ($line -match '(?i)\bctrl\+k\s+(?:to\s+)?approve\b' -and ($hasHeader -or $line -match '(?i)\balt\+j\s+manage\b' -or $line -match '^\s*[\u2503\u2502|]')) {
+        if ($line -match '(?i)^\s*[\u2503\u2502|]\s+ctrl\+k\s+(?:to\s+)?approve\b' -and ($hasHeader -or $line -match '(?i)\balt\+j\s+manage\b')) {
             $matched = $true
             $box = 0
             continue
         }
         if ($matched) {
-            if ($line -match '^\s*$' -or $line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3\u25cf\u25cb\u273b\u2800-\u28ff]') { continue }
+            if ($line -match '^\s*$' -or $line -match '^\s*[\u2503\u2502|\u2514\u251c\u21b3\u2193\u25cf\u25cb\u273b\u2800-\u28ff]') { continue }
             if (($box -eq 0 -or $box -eq 1 -or $box -eq 3) -and $line -match '(?i)^\s*(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel|\S.*(?:accept-edits|request-review|auto-approve|subagent\(s\)))') { continue }
             $matched = $false
             $box = 0

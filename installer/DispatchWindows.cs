@@ -937,8 +937,8 @@ internal static class Program
             {
                 hasHeader = true;
             }
-            if (Regex.IsMatch(line, @"\bctrl\+k\s+(?:to\s+)?approve\b", RegexOptions.IgnoreCase) &&
-                (hasHeader || Regex.IsMatch(line, @"\balt\+j\s+manage\b", RegexOptions.IgnoreCase) || RxBoxBorder.IsMatch(line)))
+            if (Regex.IsMatch(line, @"^\s*[\u2503\u2502|]\s+ctrl\+k\s+(?:to\s+)?approve\b", RegexOptions.IgnoreCase) &&
+                (hasHeader || Regex.IsMatch(line, @"\balt\+j\s+manage\b", RegexOptions.IgnoreCase)))
             {
                 matched = true;
                 box = 0;
@@ -946,7 +946,7 @@ internal static class Program
             }
             if (matched)
             {
-                if (string.IsNullOrWhiteSpace(line) || Regex.IsMatch(line, @"^\s*[\u2503\u2502|\u2514\u251c\u21b3\u25cf\u25cb\u273b\u2800-\u28ff]")) continue;
+                if (string.IsNullOrWhiteSpace(line) || Regex.IsMatch(line, @"^\s*[\u2503\u2502|\u2514\u251c\u21b3\u2193\u25cf\u25cb\u273b\u2800-\u28ff]")) continue;
                 if ((box == 0 || box == 1 || box == 3) && Regex.IsMatch(line, @"^\s*(?:\?\s+for\s+shortcuts|esc\s+to\s+cancel|\S.*(?:accept-edits|request-review|auto-approve|subagent\(s\)))", RegexOptions.IgnoreCase)) continue;
                 matched = false;
                 box = 0;

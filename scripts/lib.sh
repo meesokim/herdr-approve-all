@@ -388,13 +388,13 @@ screen_needs_ctrl_k() {
     /[Nn]eeds approval( for )?/ {
       has_header = 1
     }
-    /[Cc]trl\+k[[:space:]]+(to[[:space:]]+)?approve/ && (has_header || /[Aa]lt\+j[[:space:]]+manage/ || /^[[:space:]]*(┃|│|\|)/) {
+    /^[[:space:]]*(┃|│|\|)[[:space:]]+[Cc]trl\+k[[:space:]]+(to[[:space:]]+)?approve([[:space:]]|·|$)/ && (has_header || /[Aa]lt\+j[[:space:]]+manage/) {
       matched = 1
       box = 0
       next
     }
     matched {
-      if (/^[[:space:]]*$/ || /^[[:space:]]*(┃|│|\||└|├|↳|●|○|✻|⣟|⣯|⣷|⣾|⣽|⣻|⢿|⡿)/) next
+      if (/^[[:space:]]*$/ || /^[[:space:]]*(┃|│|\||└|├|↳|●|○|✻|↓|⣟|⣯|⣷|⣾|⣽|⣻|⢿|⡿)/) next
       if ((box == 0 || box == 1 || box == 3) && (/^[[:space:]]*(\?[[:space:]]+for[[:space:]]+shortcuts|[Ee]sc[[:space:]]+to[[:space:]]+cancel)/ || /(accept-edits|request-review|auto-approve|subagent\(s\))/)) next
       matched = 0
       box = 0
