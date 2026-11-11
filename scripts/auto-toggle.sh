@@ -54,8 +54,15 @@ case "${1:-}" in
     tick=0
     while [ -f "$FLAG" ]; do
       tick=$((tick + 1))
-      if [ $((tick % 10)) -eq 0 ]; then
+      if [ $((tick % 20)) -eq 0 ]; then
         idle_cache=""
+      fi
+      if [ -f "$STATE_DIR/hot-pane.txt" ]; then
+        hot_pane=$(head -n 1 "$STATE_DIR/hot-pane.txt" 2>/dev/null || true)
+        rm -f "$STATE_DIR/hot-pane.txt" 2>/dev/null || true
+        if [ -n "$hot_pane" ]; then
+          idle_cache=$(printf '%s\n' "$idle_cache" | grep -v "^${hot_pane}=" || true)
+        fi
       fi
       pane_idx=0
       while read -r pane agent status focused state_key; do
@@ -64,7 +71,7 @@ case "${1:-}" in
         pane_idx=$((pane_idx + 1))
         [ "${status:-}" = "?" ] && status=""
         cache_entry="$pane=${state_key:-}"
-        if { [ "${status:-}" = "idle" ] || [ "${status:-}" = "done" ]; } && [ "${focused:-false}" != "true" ] && [ "$pane_idx" -gt 2 ]; then
+        if { [ "${status:-}" = "idle" ] || [ "${status:-}" = "done" ]; } && [ "${focused:-false}" != "true" ] && [ "$pane_idx" -gt 1 ]; then
           case "
 $idle_cache
 " in

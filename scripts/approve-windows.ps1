@@ -462,6 +462,10 @@ switch ($Mode) {
             $paneId = [string]$eventData.pane_id
             $agentName = [string]$eventData.agent
             $statusHint = if ($eventData.agent_status -eq 'blocked') { 'blocked' } else { [string]$eventData.agent_status }
+            try {
+                $null = New-Item -ItemType Directory -Path $state -Force
+                Set-Content -LiteralPath (Join-Path $state 'hot-pane.txt') -Value $paneId -Encoding UTF8 -ErrorAction SilentlyContinue
+            } catch { }
             if ($statusHint -eq 'blocked' -or -not $monitorRunning) {
                 $res = Approve-Pane $paneId $agentName $statusHint
                 if ($res -eq '-' -and $statusHint -ne 'blocked') {
@@ -479,6 +483,7 @@ switch ($Mode) {
         $locked = $false
         $pidFile = Join-Path $state 'monitor.pid'
         $logFile = Join-Path $state 'monitor.log'
+        $hotFile = Join-Path $state 'hot-pane.txt'
         try {
             # Allow an exiting worker to release the lock after a rapid OFF/ON.
             $locked = Lock-Mutex $mutex 10000
@@ -486,12 +491,24 @@ switch ($Mode) {
             $null = New-Item -ItemType Directory -Path $state -Force
             Set-Content -LiteralPath $pidFile -Value $PID -Encoding ASCII -ErrorAction SilentlyContinue
             $idleCache = @{}
+            $hotUntil = @{}
             $cachedAgents = @()
             $lastListAt = [DateTime]::MinValue
             $tick = 0
+            $rrIndex = 0
             while (Test-Path -LiteralPath $flag) {
                 $tick++
                 try {
+                    if (Test-Path -LiteralPath $hotFile) {
+                        try {
+                            $hp = (Get-Content -LiteralPath $hotFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+                            Remove-Item -LiteralPath $hotFile -Force -ErrorAction SilentlyContinue
+                            if ($hp) {
+                                $hotUntil[$hp] = [DateTime]::UtcNow.AddSeconds(25)
+                                $null = Approve-Pane $hp '' ''
+                            }
+                        } catch { }
+                    }
                     # Status events are only hints: stacked or misdetected prompts
                     # may never produce another blocked transition. Prioritize red
                     # (blocked) panes first, then focused/working panes.
@@ -506,31 +523,44 @@ switch ($Mode) {
                             try { Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $_" -ErrorAction SilentlyContinue } catch { }
                         }
                     }
+                    $coldCandidates = @()
                     foreach ($agent in $cachedAgents) {
                         if (-not (Test-Path -LiteralPath $flag)) { break }
                         $paneId = [string]$agent.pane_id
                         $status = [string]$agent.agent_status
                         $isFocused = [bool]$agent.focused
-                        if ($status -in @('idle', 'done') -and -not $isFocused) {
-                            $stateKey = "${status}:$($agent.state_change_seq):$($agent.revision)"
-                            if ($idleCache[$paneId] -eq $stateKey -and ($tick % 10) -ne 0) {
-                                continue
-                            }
-                            $idleCache[$paneId] = $stateKey
-                        } else {
-                            $null = $idleCache.Remove($paneId)
+                        $stateKey = "${status}:$($agent.state_change_seq):$($agent.revision)"
+                        $stateChanged = (-not $idleCache.ContainsKey($paneId)) -or ($idleCache[$paneId] -ne $stateKey)
+                        $idleCache[$paneId] = $stateKey
+                        if ($isFocused -or $status -in @('blocked', 'working') -or $stateChanged) {
+                            $hotUntil[$paneId] = [DateTime]::UtcNow.AddSeconds($(if ($isFocused -or $status -in @('blocked', 'working')) { 25 } else { 10 }))
+                        }
+                        $isHot = $isFocused -or $status -in @('blocked', 'working') -or ($hotUntil.ContainsKey($paneId) -and $hotUntil[$paneId] -gt [DateTime]::UtcNow)
+                        if (-not $isHot -and -not $env:MOCK_HERDR_DIR) {
+                            $coldCandidates += $agent
+                            continue
                         }
                         $result = Approve-Pane $paneId ([string]$agent.agent) $status
                         if ($result -eq '1' -or $result -eq '0') {
-                            $null = $idleCache.Remove($paneId)
+                            $hotUntil[$paneId] = [DateTime]::UtcNow.AddSeconds(30)
                             try { Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) pane=$paneId result=$result" -ErrorAction SilentlyContinue } catch { }
+                        }
+                    }
+                    if ($coldCandidates.Count -gt 0 -and ($tick % 6) -eq 0) {
+                        $pick = $coldCandidates[$rrIndex % $coldCandidates.Count]
+                        $rrIndex++
+                        $cPane = [string]$pick.pane_id
+                        $cRes = Approve-Pane $cPane ([string]$pick.agent) ([string]$pick.agent_status)
+                        if ($cRes -eq '1' -or $cRes -eq '0') {
+                            $hotUntil[$cPane] = [DateTime]::UtcNow.AddSeconds(30)
+                            try { Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) pane=$cPane result=$cRes (cold)" -ErrorAction SilentlyContinue } catch { }
                         }
                     }
                 } catch {
                     # Herdr may be restarting. Keep the persisted toggle and retry.
                     try { Set-Content -LiteralPath $logFile -Value "$(Get-Date -Format o) $_" -ErrorAction SilentlyContinue } catch { }
                 }
-                Start-Sleep -Milliseconds ([Math]::Max(80, [int](1000 * (Number-Setting 'APPROVE_AUTO_POLL_SEC' 0.15))))
+                Start-Sleep -Milliseconds ([Math]::Max(60, [int](1000 * (Number-Setting 'APPROVE_AUTO_POLL_SEC' 0.08))))
             }
         } finally {
             if ($locked) { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue; $mutex.ReleaseMutex() }

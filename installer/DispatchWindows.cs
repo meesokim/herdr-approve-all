@@ -169,13 +169,22 @@ internal static class Program
                     string evPane = ExtractJsonString(evJson, "pane_id");
                     string evAgent = ExtractJsonString(evJson, "agent");
                     string evStatus = ExtractJsonString(evJson, "agent_status");
-                    if (!string.IsNullOrEmpty(evPane) && (evStatus == "blocked" || !monitorRunning))
+                    if (!string.IsNullOrEmpty(evPane))
                     {
-                        string res = ApprovePane(evPane, string.IsNullOrEmpty(evAgent) ? "unknown" : evAgent, evStatus);
-                        if (res == "-" && evStatus != "blocked")
+                        try
                         {
-                            Thread.Sleep(100);
-                            ApprovePane(evPane, string.IsNullOrEmpty(evAgent) ? "unknown" : evAgent, "");
+                            Directory.CreateDirectory(_state);
+                            File.WriteAllText(Path.Combine(_state, "hot-pane.txt"), evPane, Encoding.ASCII);
+                        }
+                        catch { }
+                        if (evStatus == "blocked" || !monitorRunning)
+                        {
+                            string res = ApprovePane(evPane, string.IsNullOrEmpty(evAgent) ? "unknown" : evAgent, evStatus);
+                            if (res == "-" && evStatus != "blocked")
+                            {
+                                Thread.Sleep(80);
+                                ApprovePane(evPane, string.IsNullOrEmpty(evAgent) ? "unknown" : evAgent, "");
+                            }
                         }
                     }
                     return 0;
@@ -229,6 +238,7 @@ internal static class Program
             bool locked = false;
             string pidFile = Path.Combine(_state, "monitor.pid");
             string logFile = Path.Combine(_state, "monitor.log");
+            string hotPaneFile = Path.Combine(_state, "hot-pane.txt");
             try
             {
                 locked = LockMutex(monitorMutex, 10000);
@@ -238,39 +248,68 @@ internal static class Program
                 try { File.WriteAllText(pidFile, selfPid.ToString(CultureInfo.InvariantCulture), Encoding.ASCII); } catch { }
                 WriteLog(logFile, "monitor started pid=" + selfPid);
 
-                Dictionary<string, string> idleCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, string> lastSeenState = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 Dictionary<string, string> stuckCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 Dictionary<string, DateTime> hotUntil = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, DateTime> recentApprovedUntil = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
                 List<AgentEntry> cachedAgents = new List<AgentEntry>();
                 DateTime lastListAt = DateTime.MinValue;
                 int tick = 0;
+                int rrIndex = 0;
 
                 while (File.Exists(_flag))
                 {
                     tick++;
                     try
                     {
-                        bool needRefresh = cachedAgents.Count == 0 || (DateTime.UtcNow - lastListAt).TotalSeconds >= 2.5;
+                        if (File.Exists(hotPaneFile))
+                        {
+                            try
+                            {
+                                string hp = File.ReadAllText(hotPaneFile).Trim();
+                                File.Delete(hotPaneFile);
+                                if (!string.IsNullOrEmpty(hp))
+                                {
+                                    hotUntil[hp] = DateTime.UtcNow.AddSeconds(20);
+                                    recentApprovedUntil[hp] = DateTime.UtcNow.AddSeconds(20);
+                                }
+                            }
+                            catch { }
+                        }
+
+                        bool needRefresh = cachedAgents.Count == 0 || (DateTime.UtcNow - lastListAt).TotalSeconds >= 2.0;
                         if (needRefresh)
                         {
                             try
                             {
+                                bool isFirstLoad = cachedAgents.Count == 0;
                                 List<AgentEntry> fresh = GetSortedAgents();
                                 if (fresh.Count > 0)
                                 {
-                                    List<long> seqs = new List<long>();
+                                    long maxSeq = 0;
                                     foreach (AgentEntry a in fresh)
                                     {
-                                        if (a.Seq > 0) seqs.Add(a.Seq);
+                                        if (a.Seq > maxSeq) maxSeq = a.Seq;
                                     }
-                                    seqs.Sort((x, y) => y.CompareTo(x));
-                                    long hotSeqCutoff = seqs.Count > 0 ? seqs[Math.Min(5, seqs.Count - 1)] : 0;
-                                    DateTime hotExpiry = DateTime.UtcNow.AddSeconds(300);
+                                    DateTime nowRefresh = DateTime.UtcNow;
                                     foreach (AgentEntry a in fresh)
                                     {
-                                        if (a.Focused || a.Status == "working" || a.Status == "blocked" || (a.Seq > 0 && a.Seq >= hotSeqCutoff))
+                                        string sk = a.Status + ":" + a.Seq + ":" + a.Rev;
+                                        string prevSk;
+                                        bool changed = !lastSeenState.TryGetValue(a.PaneId, out prevSk) || prevSk != sk;
+                                        lastSeenState[a.PaneId] = sk;
+
+                                        if (a.Focused || a.Status == "working" || a.Status == "blocked")
                                         {
-                                            hotUntil[a.PaneId] = hotExpiry;
+                                            hotUntil[a.PaneId] = nowRefresh.AddSeconds(12);
+                                        }
+                                        else if (!isFirstLoad && changed)
+                                        {
+                                            hotUntil[a.PaneId] = nowRefresh.AddSeconds(15);
+                                        }
+                                        else if (isFirstLoad && maxSeq > 0 && a.Seq == maxSeq)
+                                        {
+                                            hotUntil[a.PaneId] = nowRefresh.AddSeconds(12);
                                         }
                                     }
                                     cachedAgents = fresh;
@@ -285,41 +324,59 @@ internal static class Program
                         }
 
                         DateTime nowUtc = DateTime.UtcNow;
+                        List<AgentEntry> hotList = new List<AgentEntry>();
+                        List<AgentEntry> coldList = new List<AgentEntry>();
+
                         foreach (AgentEntry agent in cachedAgents)
+                        {
+                            DateTime exp;
+                            bool isRecentApproved = recentApprovedUntil.TryGetValue(agent.PaneId, out exp) && nowUtc < exp;
+                            bool isHotWindow = hotUntil.TryGetValue(agent.PaneId, out exp) && nowUtc < exp;
+                            bool isHot = agent.Status == "blocked" || isRecentApproved || agent.Focused || agent.Status == "working" || isHotWindow;
+
+                            if (agent.Status == "blocked") agent.Rank = 0;
+                            else if (isRecentApproved) agent.Rank = 1;
+                            else if (agent.Focused) agent.Rank = 2;
+                            else if (agent.Status == "working") agent.Rank = 3;
+                            else if (isHotWindow) agent.Rank = 4;
+                            else agent.Rank = 5;
+
+                            if (isHot) hotList.Add(agent);
+                            else coldList.Add(agent);
+                        }
+
+                        hotList.Sort((a, b) =>
+                        {
+                            int cmp = a.Rank.CompareTo(b.Rank);
+                            if (cmp != 0) return cmp;
+                            return b.Seq.CompareTo(a.Seq);
+                        });
+
+                        // Poll at most 1 cold idle pane every 6 ticks in round-robin so we never block the loop
+                        if (coldList.Count > 0 && (tick % 6) == 0)
+                        {
+                            AgentEntry coldPick = coldList[rrIndex % coldList.Count];
+                            rrIndex = (rrIndex + 1) % coldList.Count;
+                            hotList.Add(coldPick);
+                        }
+
+                        foreach (AgentEntry agent in hotList)
                         {
                             if (!File.Exists(_flag)) break;
                             string stateKey = agent.Status + ":" + agent.Seq + ":" + agent.Rev;
-                            bool isIdleOrDone = (agent.Status == "idle" || agent.Status == "done");
-                            DateTime expiry;
-                            bool isHot = agent.Focused || agent.Status == "working" || agent.Status == "blocked" ||
-                                         (hotUntil.TryGetValue(agent.PaneId, out expiry) && nowUtc < expiry);
-
-                            if (isIdleOrDone && !isHot)
+                            string stuckKey;
+                            if (stuckCache.TryGetValue(agent.PaneId, out stuckKey) && stuckKey == stateKey && (tick % 15) != 0)
                             {
-                                string prevKey;
-                                if (idleCache.TryGetValue(agent.PaneId, out prevKey) && prevKey == stateKey && (tick % 20) != 0)
-                                {
-                                    continue;
-                                }
-                                idleCache[agent.PaneId] = stateKey;
-                            }
-                            else
-                            {
-                                idleCache.Remove(agent.PaneId);
-                                string stuckKey;
-                                if (stuckCache.TryGetValue(agent.PaneId, out stuckKey) && stuckKey == stateKey && (tick % 15) != 0)
-                                {
-                                    continue;
-                                }
+                                continue;
                             }
 
                             string scrapeHint = string.IsNullOrEmpty(agent.Status) ? "working" : agent.Status;
                             string result = ApprovePane(agent.PaneId, agent.Agent, scrapeHint);
                             if (result == "1")
                             {
-                                idleCache.Remove(agent.PaneId);
                                 stuckCache.Remove(agent.PaneId);
-                                hotUntil[agent.PaneId] = DateTime.UtcNow.AddSeconds(120);
+                                hotUntil[agent.PaneId] = DateTime.UtcNow.AddSeconds(25);
+                                recentApprovedUntil[agent.PaneId] = DateTime.UtcNow.AddSeconds(30);
                                 WriteLog(logFile, "pane=" + agent.PaneId + " status=" + agent.Status + " result=1");
                             }
                             else if (result == "0")
@@ -334,7 +391,7 @@ internal static class Program
                         WriteLog(logFile, ex.Message);
                     }
 
-                    int pollMs = Math.Max(80, (int)(1000.0 * NumberSetting("APPROVE_AUTO_POLL_SEC", 0.15)));
+                    int pollMs = Math.Max(60, (int)(1000.0 * NumberSetting("APPROVE_AUTO_POLL_SEC", 0.08)));
                     Thread.Sleep(pollMs);
                 }
             }
@@ -794,7 +851,7 @@ internal static class Program
             string status = knownStatus;
             if (string.IsNullOrEmpty(status))
             {
-                string getJson = InvokeHerdr(new string[] { "agent", "get", pane }, 4000);
+                string getJson = InvokeHerdr(new string[] { "agent", "get", pane }, 2500);
                 status = ExtractJsonString(getJson, "agent_status");
             }
             if (status == "blocked")
@@ -803,7 +860,7 @@ internal static class Program
                 {
                     try
                     {
-                        string bScreen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 4000));
+                        string bScreen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 2500));
                         if (!string.IsNullOrEmpty(bScreen))
                         {
                             if (TestCtrlKNeeded(bScreen)) return "ctrl+k";
@@ -818,7 +875,7 @@ internal static class Program
                 return "approve";
             }
             if (Environment.GetEnvironmentVariable("APPROVE_SCRAPE_FALLBACK") == "0") return "";
-            string screen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 4000));
+            string screen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 2500));
             if (TestCtrlKNeeded(screen)) return "ctrl+k";
             if (TestSurveySkipNeeded(screen)) return "0";
             if (TestPromptVisible(screen)) return "approve";
@@ -863,8 +920,8 @@ internal static class Program
                 string lastAction = "";
                 bool cleared = false;
                 int max = (int)NumberSetting("APPROVE_MAX_SENDS", 5);
-                int settleMs = (int)(1000.0 * NumberSetting("APPROVE_SETTLE_SEC", 0.12));
-                int timeout = (int)NumberSetting("APPROVE_LEAVE_TIMEOUT_MS", 1200);
+                int settleMs = (int)(1000.0 * NumberSetting("APPROVE_SETTLE_SEC", 0.08));
+                int timeout = (int)NumberSetting("APPROVE_LEAVE_TIMEOUT_MS", _automatic ? 350 : 1200);
 
                 while (sent < max && keys.Length > 0)
                 {
@@ -887,17 +944,20 @@ internal static class Program
                         }
                         try
                         {
-                            InvokeHerdr(new string[] { "agent", "prompt", pane, "continue" }, 4000);
+                            InvokeHerdr(new string[] { "agent", "prompt", pane, "continue" }, 2500);
                         }
                         catch
                         {
-                            try { InvokeHerdr(new string[] { "agent", "send-keys", pane, "c", "o", "n", "t", "i", "n", "u", "e", "enter" }, 4000); }
+                            try { InvokeHerdr(new string[] { "agent", "send-keys", pane, "c", "o", "n", "t", "i", "n", "u", "e", "enter" }, 2500); }
                             catch { break; }
                         }
                         _lastContinueAt[pane] = DateTime.UtcNow;
                         sent++;
                         lastAction = "continue";
-                        try { InvokeHerdr(new string[] { "agent", "wait", pane, "--until", "working", "--timeout", timeout.ToString(CultureInfo.InvariantCulture) }, Math.Max(2000, timeout + 1500)); } catch { }
+                        if (!_automatic)
+                        {
+                            try { InvokeHerdr(new string[] { "agent", "wait", pane, "--until", "working", "--timeout", timeout.ToString(CultureInfo.InvariantCulture) }, Math.Max(1200, timeout + 800)); } catch { }
+                        }
                         Thread.Sleep(settleMs);
                         cleared = true;
                         break;
@@ -905,16 +965,16 @@ internal static class Program
 
                     if (action == "ctrl+k" || action == "0")
                     {
-                        try { InvokeHerdr(new string[] { "agent", "send-keys", pane, action }, 4000); }
+                        try { InvokeHerdr(new string[] { "agent", "send-keys", pane, action }, 2500); }
                         catch { break; }
                         sent++;
                         lastAction = action;
-                        if (hint == "blocked")
+                        if (!_automatic && hint == "blocked")
                         {
-                            try { InvokeHerdr(new string[] { "agent", "wait", pane, "--until", "idle", "--until", "working", "--until", "done", "--timeout", timeout.ToString(CultureInfo.InvariantCulture) }, Math.Max(2000, timeout + 1500)); } catch { }
+                            try { InvokeHerdr(new string[] { "agent", "wait", pane, "--until", "idle", "--until", "working", "--until", "done", "--timeout", timeout.ToString(CultureInfo.InvariantCulture) }, Math.Max(1200, timeout + 800)); } catch { }
                         }
                         Thread.Sleep(settleMs);
-                        if (_automatic && !string.IsNullOrEmpty(hint) && hint != "blocked")
+                        if (_automatic)
                         {
                             cleared = true;
                             break;
@@ -927,16 +987,16 @@ internal static class Program
                     sendArgs[1] = "send-keys";
                     sendArgs[2] = pane;
                     Array.Copy(keys, 0, sendArgs, 3, keys.Length);
-                    try { InvokeHerdr(sendArgs, 4000); }
+                    try { InvokeHerdr(sendArgs, 2500); }
                     catch { break; }
                     sent++;
                     lastAction = "approve";
-                    if (string.IsNullOrEmpty(hint) || hint == "blocked")
+                    if (!_automatic && (string.IsNullOrEmpty(hint) || hint == "blocked"))
                     {
-                        try { InvokeHerdr(new string[] { "agent", "wait", pane, "--until", "idle", "--until", "working", "--until", "done", "--timeout", timeout.ToString(CultureInfo.InvariantCulture) }, Math.Max(2000, timeout + 1500)); } catch { }
+                        try { InvokeHerdr(new string[] { "agent", "wait", pane, "--until", "idle", "--until", "working", "--until", "done", "--timeout", timeout.ToString(CultureInfo.InvariantCulture) }, Math.Max(1200, timeout + 800)); } catch { }
                     }
                     Thread.Sleep(settleMs);
-                    if (_automatic && !string.IsNullOrEmpty(hint) && hint != "blocked")
+                    if (_automatic)
                     {
                         cleared = true;
                         break;
@@ -958,7 +1018,7 @@ internal static class Program
 
     private static List<AgentEntry> GetSortedAgents()
     {
-        string json = InvokeHerdr(new string[] { "agent", "list" }, 12000);
+        string json = InvokeHerdr(new string[] { "agent", "list" }, 4000);
         List<AgentEntry> list = new List<AgentEntry>();
         int agentsIdx = json.IndexOf("\"agents\"", StringComparison.Ordinal);
         if (agentsIdx < 0) return list;
@@ -1001,8 +1061,8 @@ internal static class Program
                         e.Seq = ExtractJsonLong(obj, "state_change_seq");
                         e.Rev = ExtractJsonLong(obj, "revision");
                         if (e.Status == "blocked") e.Rank = 0;
-                        else if (e.Status == "working") e.Rank = 1;
-                        else if (e.Focused) e.Rank = 2;
+                        else if (e.Focused) e.Rank = 1;
+                        else if (e.Status == "working") e.Rank = 2;
                         else e.Rank = 3;
                         list.Add(e);
                     }
@@ -1013,21 +1073,6 @@ internal static class Program
             {
                 break;
             }
-        }
-
-        List<long> seqs = new List<long>();
-        foreach (AgentEntry e in list)
-        {
-            if (e.Seq > 0) seqs.Add(e.Seq);
-        }
-        seqs.Sort((x, y) => y.CompareTo(x));
-        long hotSeqCutoff = seqs.Count > 0 ? seqs[Math.Min(5, seqs.Count - 1)] : 0;
-        foreach (AgentEntry e in list)
-        {
-            if (e.Status == "blocked") e.Rank = 0;
-            else if (e.Status == "working" || (e.Seq > 0 && e.Seq >= hotSeqCutoff)) e.Rank = 1;
-            else if (e.Focused) e.Rank = 2;
-            else e.Rank = 3;
         }
 
         list.Sort((a, b) =>

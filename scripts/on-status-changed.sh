@@ -24,6 +24,9 @@ EOF
 
 [ "$pane" != "?" ] && [ -n "$pane" ] || exit 0
 
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+printf '%s\n' "$pane" > "$STATE_DIR/hot-pane.txt" 2>/dev/null || true
+
 if [ "$status" != "blocked" ] && [ "$was_running" = "1" ]; then
   exit 0
 fi
