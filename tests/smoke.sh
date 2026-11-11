@@ -121,6 +121,7 @@ Run this command?
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "4" ] || { echo "sweep missed minimal Run this command? prompt" >&2; exit 1; }
+[ "$(tail -n 1 "$TMP/sent")" = "1" ] || { echo "sweep did not send 1 on run command prompt" >&2; exit 1; }
 
 # Verify agy outside-workspace file access prompt (including composer box and background task tray below) while status is working/idle.
 cat > "$TMP/fallback_screen.txt" << 'EOF'
@@ -151,6 +152,25 @@ esc to cancel                                                                   
 EOF
 bash "$ROOT/scripts/approve-blocked.sh"
 [ "$(send_count)" = "6" ] || { echo "sweep missed agy file edit acceptance prompt" >&2; exit 1; }
+[ "$(tail -n 1 "$TMP/sent")" = "1" ] || { echo "sweep did not send 1 on file edit prompt" >&2; exit 1; }
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib.sh"
+create_screen=$'Allow creation of this file?\n> 1. Yes, allow creation\n  2. No, deny creation\n'
+screen_needs_file_yes "$create_screen" || { echo "creation prompt was not recognized" >&2; exit 1; }
+run_screen=$'Run this command?\n> 1. Yes, run command\n'
+screen_needs_file_yes "$run_screen" && { echo "run-command prompt was treated as a file edit" >&2; exit 1; }
+screen_needs_run_yes "$run_screen" || { echo "run-command prompt was not recognized" >&2; exit 1; }
+run_above_box=$'Run this command?\n> 1. Yes, run command\n────────────────────────────────────────────────────────────\n>\n────────────────────────────────────────────────────────────\n'
+screen_needs_run_yes "$run_above_box" || { echo "run-command prompt above the composer was missed" >&2; exit 1; }
+grok_run=$'     ❯ Run this command?\n       > 1. Yes, run command\n────────────────────────────────────────────────────────────\n>\n────────────────────────────────────────────────────────────\n'
+screen_needs_run_yes "$grok_run" && { echo "transcript run-command text was treated as a live dialog" >&2; exit 1; }
+screen_has_prompt "$grok_run" && { echo "transcript run-command text was treated as a generic prompt" >&2; exit 1; }
+quoted_screen=$'  > Accept this file edit?\n    > 1. Yes, accept this change\n      2. No, reject this change\n'
+screen_needs_file_yes "$quoted_screen" && { echo "quoted file edit prompt was treated as live" >&2; exit 1; }
+grok_screen=$'     ❯ Accept this file edit?\n       > 1. Yes, accept this change\n  f full diff\n────────────────────────────────────────────────────────────\n>\n────────────────────────────────────────────────────────────\n'
+screen_needs_file_yes "$grok_screen" && { echo "transcript file-edit text was treated as a live dialog" >&2; exit 1; }
+scrolled_screen=$'Accept this file edit?\n> 1. Yes, accept this change\n  2. No, reject this change\n  f full diff\n────────────────────────────────────────────────────────────\n>\n────────────────────────────────────────────────────────────\n'
+screen_needs_file_yes "$scrolled_screen" && { echo "scrolled-away file edit was treated as live" >&2; exit 1; }
 
 # Verify transient network issue screen submits "continue".
 cat > "$TMP/fallback_screen.txt" << 'EOF'

@@ -145,7 +145,7 @@ function Test-PromptVisible([string]$Screen) {
     $matched = $false
     $inUserQuote = $false
     $afterRule = $false
-    $opt1Pattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow|Accept)\b'
+    $opt1Pattern = '(?i)^(?:[\u2503\u2502|])?[' + $cursor + '>]\s*1\.\s+(?:Yes|Allow|Accept)\b'
     $optNPattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:Yes|No|Allow|Deny|Accept|Reject)\b'
     $classicLinePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:[' + $cursor + '>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow|Accept)\b).*(?:enter to (?:confirm|select)|esc to cancel)'
     $cuePattern = '(?i)Allow (?:sandbox bypass|access|calling|creation|administrator|remote)\b|Accept this file edit\?|Confirm the command is safe|Requesting permission for:|Run this command\?|Reason:\s*outside workspace|Do you want to'
@@ -326,6 +326,130 @@ function Test-SurveySkipNeeded([string]$Screen) {
     }
     return $matched
 }
+function Test-FileYes([string]$Screen) {
+    if (-not $Screen) { return $false }
+    $rule = ([string][char]0x2500) * 10
+    $cursor = [string][char]0x276f
+    $hasCue = $false
+    $hasOpt1 = $false
+    $hasOpt2 = $false
+    $hasFooter = $false
+    $matched = $false
+    $inUserQuote = $false
+    $afterRule = $false
+    $opt1Pattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?[' + $cursor + '>]\s*1\.\s+Yes\b'
+    $opt2Pattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?2\.\s+No,\s+(?:Reject|Deny)\b'
+    $cuePattern = '(?i)^\s*(?:[\u2503\u2502|]\s*)?(?:Accept this file edit\?|Allow creation of this file\?)\s*$'
+    $resetActivityPattern = '(?i)Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|\d+(?:\.\d+)?k\s+in\s*\||Conversation compacted'
+    foreach ($line in ($Screen -split "\r?\n")) {
+        if ($line.Contains($rule) -and $line -notmatch '^\s*[\u2503\u2502|]') {
+            $hasCue = $false; $hasOpt1 = $false; $hasOpt2 = $false; $hasFooter = $false; $matched = $false; $inUserQuote = $false
+            $afterRule = $true
+            continue
+        }
+        if ($line -match '^\s*>\s*$') { continue }
+        if ($afterRule -and $line -match '^\s*>') {
+            $afterRule = $false
+            continue
+        }
+        if ($line -notmatch '^\s*$') { $afterRule = $false }
+        if ($line -match $resetActivityPattern) {
+            $hasCue = $false; $hasOpt1 = $false; $hasOpt2 = $false; $hasFooter = $false; $matched = $false; $inUserQuote = $false
+            continue
+        }
+        if (-not $inUserQuote -and $line -match $opt1Pattern) {
+            $hasOpt1 = $true
+            if ($hasCue -and ($hasOpt2 -or $hasFooter)) { $matched = $true }
+            continue
+        }
+        if (-not $inUserQuote -and $line -match $opt2Pattern) {
+            $hasOpt2 = $true
+            if ($hasCue -and $hasOpt1) { $matched = $true }
+            continue
+        }
+        if (-not $inUserQuote -and $line -match 'f full diff') {
+            $hasFooter = $true
+            if ($hasCue -and $hasOpt1) { $matched = $true }
+            continue
+        }
+        if ($line -match '^\s*>') {
+            $inUserQuote = $true
+            $hasCue = $false; $hasOpt1 = $false; $hasOpt2 = $false; $hasFooter = $false; $matched = $false
+            continue
+        }
+        if ($inUserQuote) {
+            if ($line -match '^\s*$' -or ($line -match '^\s+' -and $line -notmatch '^\s*[\u2503\u2502|\u25cf\u25cb\u273b]')) {
+                continue
+            }
+            $inUserQuote = $false
+        }
+        if ($line -match $cuePattern) {
+            $hasCue = $true
+            if ($hasOpt1 -and ($hasOpt2 -or $hasFooter)) { $matched = $true }
+            continue
+        }
+        if (-not $matched -and $hasOpt1 -and $line -notmatch '^\s*$') {
+            $hasOpt1 = $false; $hasOpt2 = $false; $hasFooter = $false
+        }
+    }
+    return $matched
+}
+function Test-RunYes([string]$Screen) {
+    if (-not $Screen) { return $false }
+    $rule = ([string][char]0x2500) * 10
+    $cursor = [string][char]0x276f
+    $hasCue = $false
+    $hasOpt1 = $false
+    $matched = $false
+    $inUserQuote = $false
+    $afterRule = $false
+    $opt1Pattern = '(?i)^(?:[\u2503\u2502|])?[' + $cursor + '>]\s*1\.\s+Yes,\s+run command\b'
+    $cuePattern = '(?i)^(?:[\u2503\u2502|])?Run this command\?\s*$'
+    $resetActivityPattern = '(?i)Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|\d+(?:\.\d+)?k\s+in\s*\||Conversation compacted'
+    foreach ($line in ($Screen -split "\r?\n")) {
+        if ($line.Contains($rule) -and $line -notmatch '^\s*[\u2503\u2502|]') {
+            if ($matched) { return $true }
+            $hasCue = $false; $hasOpt1 = $false; $matched = $false; $inUserQuote = $false
+            $afterRule = $true
+            continue
+        }
+        if ($line -match '^\s*>\s*$') { continue }
+        if ($afterRule -and $line -match '^\s*>') {
+            $afterRule = $false
+            continue
+        }
+        if ($line -notmatch '^\s*$') { $afterRule = $false }
+        if ($line -match $resetActivityPattern) {
+            $hasCue = $false; $hasOpt1 = $false; $matched = $false; $inUserQuote = $false
+            continue
+        }
+        if (-not $inUserQuote -and $line -match $opt1Pattern) {
+            $hasOpt1 = $true
+            if ($hasCue) { $matched = $true }
+            continue
+        }
+        if ($line -match '^\s*>') {
+            $inUserQuote = $true
+            $hasCue = $false; $hasOpt1 = $false; $matched = $false
+            continue
+        }
+        if ($inUserQuote) {
+            if ($line -match '^\s*$' -or ($line -match '^\s+' -and $line -notmatch '^\s*[\u2503\u2502|\u25cf\u25cb\u273b]')) {
+                continue
+            }
+            $inUserQuote = $false
+        }
+        if (-not $inUserQuote -and $line -match $cuePattern) {
+            $hasCue = $true
+            if ($hasOpt1) { $matched = $true }
+            continue
+        }
+        if (-not $matched -and $hasOpt1 -and $line -notmatch '^\s*$') {
+            $hasOpt1 = $false
+        }
+    }
+    return $matched
+}
 function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
     try {
         $status = if ($KnownStatus) { $KnownStatus } else {
@@ -338,6 +462,8 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
                     if ($bScreen) {
                         if (Test-CtrlKNeeded $bScreen) { return 'ctrl+k' }
                         if (Test-SurveySkipNeeded $bScreen) { return '0' }
+                        if (Test-FileYes $bScreen) { return '1' }
+                        if (Test-RunYes $bScreen) { return '1' }
                         if (Test-PromptVisible $bScreen) { return 'approve' }
                         if (Test-ContinueNeeded $bScreen) { return 'continue' }
                         if (Test-FalseBlockedScreen $bScreen) { return '' }
@@ -350,6 +476,8 @@ function Get-PaneAction([string]$Pane, [string]$KnownStatus = '') {
         $screen = Normalize-Screen (Invoke-Herdr @('agent','read',$Pane,'--source','visible','--lines','40'))
         if (Test-CtrlKNeeded $screen) { return 'ctrl+k' }
         if (Test-SurveySkipNeeded $screen) { return '0' }
+        if (Test-FileYes $screen) { return '1' }
+        if (Test-RunYes $screen) { return '1' }
         if (Test-PromptVisible $screen) { return 'approve' }
         if (Test-ContinueNeeded $screen) { return 'continue' }
         return ''
@@ -412,7 +540,7 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
                 $cleared = $true
                 break
             }
-            if ($action -eq 'ctrl+k' -or $action -eq '0') {
+            if ($action -eq 'ctrl+k' -or $action -eq '0' -or $action -eq '1') {
                 try { $null = Invoke-Herdr @('agent','send-keys',$Pane,$action) } catch { break }
                 $sent++
                 $lastAction = $action
@@ -435,7 +563,7 @@ function Approve-Pane([string]$Pane, [string]$Agent, [string]$InitialStatus = ''
         if ($sent -eq 0) { return '-' }
         if ($cleared -or $lastAction -eq 'continue') { return '1' }
         $remaining = Get-PaneAction $Pane
-        if ($remaining -eq 'approve' -or $remaining -eq 'ctrl+k' -or $remaining -eq '0') { return '0' }
+        if ($remaining -eq 'approve' -or $remaining -eq 'ctrl+k' -or $remaining -eq '0' -or $remaining -eq '1') { return '0' }
         return '1'
     } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
 }

@@ -72,10 +72,16 @@ internal static class Program
     private static readonly Regex RxAnyQuote = new Regex(@"^\s*>", RegexOptions.Compiled);
     private static readonly Regex RxIndentedNonBullet = new Regex(@"^\s+", RegexOptions.Compiled);
     private static readonly Regex RxBulletOrBox = new Regex(@"^\s*[\u2503\u2502|\u25cf\u25cb\u273b]", RegexOptions.Compiled);
-    private static readonly Regex RxOpt1 = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?[\u276f>]\s*1\.\s+(?:Yes|Allow|Accept)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RxOpt1 = new Regex(@"^(?:[\u2503\u2502|])?[\u276f>]\s*1\.\s+(?:Yes|Allow|Accept)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex RxOptN = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?[2-9]\.\s+(?:Yes|No|Allow|Deny|Accept|Reject)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex RxClassicLine = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?(?:[\u276f>]\s*\d+\.\s+|1\.\s+(?:Yes|Allow|Accept)\b).*(?:enter to (?:confirm|select)|esc to cancel)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex RxCue = new Regex(@"Allow (?:sandbox bypass|access|calling|creation|administrator|remote)\b|Accept this file edit\?|Confirm the command is safe|Requesting permission for:|Run this command\?|Reason:\s*outside workspace|Do you want to", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RxFileOpt1 = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?[\u276f>]\s*1\.\s+Yes\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RxFileOpt2 = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?2\.\s+No,\s+(?:Reject|Deny)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RxFileFooter = new Regex(@"f full diff", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RxFileCue = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?(?:Accept this file edit\?|Allow creation of this file\?)\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RxRunOpt1 = new Regex(@"^(?:[\u2503\u2502|])?[\u276f>]\s*1\.\s+Yes,\s+run command\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex RxRunCue = new Regex(@"^(?:[\u2503\u2502|])?Run this command\?\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex RxFooterCue = new Regex(@"^\s*(?:[\u2503\u2502|]\s*)?(?:.*(?:Navigate|tab Amend|ctrl\+g|enter to (?:confirm|select))|esc to cancel\s*$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex RxResetActivity = new Regex(@"Running command\.\.\.|Reading file\.\.\.|Editing file|Thinking\.\.\.|Loading\.\.\.|Thought for \d|\d+(?:\.\d+)?k\s+in\s*\||Conversation compacted", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
@@ -689,6 +695,173 @@ internal static class Program
         return matched;
     }
 
+    private static bool TestFileYes(string screen)
+    {
+        if (string.IsNullOrEmpty(screen)) return false;
+        bool hasCue = false;
+        bool hasOpt1 = false;
+        bool hasOpt2 = false;
+        bool hasFooter = false;
+        bool matched = false;
+        bool inUserQuote = false;
+        bool afterRule = false;
+        string[] lines = screen.Replace("\r\n", "\n").Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.IndexOf("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500", StringComparison.Ordinal) >= 0 && !RxBoxBorder.IsMatch(line))
+            {
+                hasCue = false;
+                hasOpt1 = false;
+                hasOpt2 = false;
+                hasFooter = false;
+                matched = false;
+                inUserQuote = false;
+                afterRule = true;
+                continue;
+            }
+            if (RxEmptyQuote.IsMatch(line)) continue;
+            if (afterRule && RxAnyQuote.IsMatch(line))
+            {
+                afterRule = false;
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(line)) afterRule = false;
+            if (RxResetActivity.IsMatch(line))
+            {
+                hasCue = false;
+                hasOpt1 = false;
+                hasOpt2 = false;
+                hasFooter = false;
+                matched = false;
+                inUserQuote = false;
+                continue;
+            }
+            if (!inUserQuote && RxFileOpt1.IsMatch(line))
+            {
+                hasOpt1 = true;
+                if (hasCue && (hasOpt2 || hasFooter)) matched = true;
+                continue;
+            }
+            if (!inUserQuote && RxFileOpt2.IsMatch(line))
+            {
+                hasOpt2 = true;
+                if (hasCue && hasOpt1) matched = true;
+                continue;
+            }
+            if (!inUserQuote && RxFileFooter.IsMatch(line))
+            {
+                hasFooter = true;
+                if (hasCue && hasOpt1) matched = true;
+                continue;
+            }
+            if (RxAnyQuote.IsMatch(line))
+            {
+                inUserQuote = true;
+                hasCue = false;
+                hasOpt1 = false;
+                hasOpt2 = false;
+                hasFooter = false;
+                matched = false;
+                continue;
+            }
+            if (inUserQuote)
+            {
+                if (string.IsNullOrWhiteSpace(line) || (RxIndentedNonBullet.IsMatch(line) && !RxBulletOrBox.IsMatch(line)))
+                {
+                    continue;
+                }
+                inUserQuote = false;
+            }
+            if (RxFileCue.IsMatch(line))
+            {
+                hasCue = true;
+                if (hasOpt1 && (hasOpt2 || hasFooter)) matched = true;
+                continue;
+            }
+            if (!matched && hasOpt1 && !string.IsNullOrWhiteSpace(line))
+            {
+                hasOpt1 = false;
+                hasOpt2 = false;
+                hasFooter = false;
+            }
+        }
+        return matched;
+    }
+
+    private static bool TestRunYes(string screen)
+    {
+        if (string.IsNullOrEmpty(screen)) return false;
+        bool hasCue = false;
+        bool hasOpt1 = false;
+        bool matched = false;
+        bool inUserQuote = false;
+        bool afterRule = false;
+        string[] lines = screen.Replace("\r\n", "\n").Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.IndexOf("\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500", StringComparison.Ordinal) >= 0 && !RxBoxBorder.IsMatch(line))
+            {
+                if (matched) return true;
+                hasCue = false;
+                hasOpt1 = false;
+                matched = false;
+                inUserQuote = false;
+                afterRule = true;
+                continue;
+            }
+            if (RxEmptyQuote.IsMatch(line)) continue;
+            if (afterRule && RxAnyQuote.IsMatch(line))
+            {
+                afterRule = false;
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(line)) afterRule = false;
+            if (RxResetActivity.IsMatch(line))
+            {
+                hasCue = false;
+                hasOpt1 = false;
+                matched = false;
+                inUserQuote = false;
+                continue;
+            }
+            if (!inUserQuote && RxRunOpt1.IsMatch(line))
+            {
+                hasOpt1 = true;
+                if (hasCue) matched = true;
+                continue;
+            }
+            if (RxAnyQuote.IsMatch(line))
+            {
+                inUserQuote = true;
+                hasCue = false;
+                hasOpt1 = false;
+                matched = false;
+                continue;
+            }
+            if (inUserQuote)
+            {
+                if (string.IsNullOrWhiteSpace(line) || (RxIndentedNonBullet.IsMatch(line) && !RxBulletOrBox.IsMatch(line)))
+                {
+                    continue;
+                }
+                inUserQuote = false;
+            }
+            if (!inUserQuote && RxRunCue.IsMatch(line))
+            {
+                hasCue = true;
+                if (hasOpt1) matched = true;
+                continue;
+            }
+            if (!matched && hasOpt1 && !string.IsNullOrWhiteSpace(line))
+            {
+                hasOpt1 = false;
+            }
+        }
+        return matched;
+    }
+
     private static bool TestFalseBlockedScreen(string screen)
     {
         if (string.IsNullOrEmpty(screen)) return false;
@@ -865,6 +1038,8 @@ internal static class Program
                         {
                             if (TestCtrlKNeeded(bScreen)) return "ctrl+k";
                             if (TestSurveySkipNeeded(bScreen)) return "0";
+                            if (TestFileYes(bScreen)) return "1";
+                            if (TestRunYes(bScreen)) return "1";
                             if (TestPromptVisible(bScreen)) return "approve";
                             if (TestContinueNeeded(bScreen)) return "continue";
                             if (TestFalseBlockedScreen(bScreen)) return "";
@@ -878,6 +1053,8 @@ internal static class Program
             string screen = NormalizeScreen(InvokeHerdr(new string[] { "agent", "read", pane, "--source", "visible", "--lines", "40" }, 2500));
             if (TestCtrlKNeeded(screen)) return "ctrl+k";
             if (TestSurveySkipNeeded(screen)) return "0";
+            if (TestFileYes(screen)) return "1";
+            if (TestRunYes(screen)) return "1";
             if (TestPromptVisible(screen)) return "approve";
             if (TestContinueNeeded(screen)) return "continue";
             return "";
@@ -963,7 +1140,7 @@ internal static class Program
                         break;
                     }
 
-                    if (action == "ctrl+k" || action == "0")
+                    if (action == "ctrl+k" || action == "0" || action == "1")
                     {
                         try { InvokeHerdr(new string[] { "agent", "send-keys", pane, action }, 2500); }
                         catch { break; }
@@ -1006,7 +1183,7 @@ internal static class Program
                 if (sent == 0) return "-";
                 if (cleared || lastAction == "continue") return "1";
                 string remaining = GetPaneAction(pane, "");
-                if (remaining == "approve" || remaining == "ctrl+k" || remaining == "0") return "0";
+                if (remaining == "approve" || remaining == "ctrl+k" || remaining == "0" || remaining == "1") return "0";
                 return "1";
             }
             finally

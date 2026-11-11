@@ -98,6 +98,7 @@ Run this command?
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $runCmdScreen, [Text.Encoding]::UTF8)
     & $script sweep
     if ((Send-Count) -ne 4) { throw 'sweep missed minimal Run this command? prompt' }
+    if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne '1') { throw 'sweep did not send 1 on run command prompt' }
 
     # Verify agy outside-workspace file access prompt (including composer box and background task tray below) is approved while status is working/idle.
     $dot = [string][char]0x25cf
@@ -132,6 +133,7 @@ esc to cancel                                                                   
     [IO.File]::WriteAllText((Join-Path $tmp 'fallback_screen.txt'), $fileEditScreen, [Text.Encoding]::UTF8)
     & $script sweep
     if ((Send-Count) -ne 6) { throw 'sweep missed agy file edit acceptance prompt' }
+    if ((Get-Content (Join-Path $tmp 'sent') | Select-Object -Last 1).Trim() -ne '1') { throw 'sweep did not send 1 on file edit prompt' }
 
     # Verify transient network issue screen submits "continue".
     $netErrorScreen = @"

@@ -55,7 +55,9 @@ list_sorted_agents() {
 for a in sorted(d.get("result", {}).get("agents") or [], key=rank):
     st = a.get("agent_status") or "?"
     foc = "true" if a.get("focused") else "false"
-    sk = f"{st}:{a.get(\"state_change_seq\", 0)}:{a.get(\"revision\", 0)}"
+    seq = a.get("state_change_seq", 0)
+    rev = a.get("revision", 0)
+    sk = "%s:%s:%s" % (st, seq, rev)
     print(a.get("pane_id", ""), a.get("agent") or "unknown", st, foc, sk)'
 }
 
@@ -173,7 +175,7 @@ screen_has_prompt() {
       has_opt1 = 1; matched = 1
       next
     }
-    !in_quote && /^[[:space:]]*(┃|│|\|)?[[:space:]]*(❯|>)[[:space:]]*1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)/ {
+    !in_quote && /^(┃|│|\|)?(❯|>)[[:space:]]*1\.[[:space:]]+([Yy]es|[Aa]llow|[Aa]ccept)([[:space:],-]|$)/ {
       has_opt1 = 1
       if (has_cue) matched = 1
       next
@@ -193,6 +195,122 @@ screen_has_prompt() {
     }
     /([Aa]llow (sandbox bypass|access|calling|creation|administrator|remote)|[Aa]ccept this file edit\?|[Cc]onfirm the command is safe|[Rr]equesting permission for:|[Rr]un this command\?|[Rr]eason:[[:space:]]*outside workspace|[Dd]o you want to)/ {
       has_cue = 1
+      next
+    }
+    !matched && has_opt1 && !/^[[:space:]]*$/ {
+      has_opt1 = 0
+    }
+    END { exit (matched ? 0 : 1) }
+  '
+}
+
+# screen_needs_file_yes <screen_text>: true for a live Antigravity file edit or
+# new-file dialog. Those prompts ignore Enter even when option 1 is highlighted;
+# the confirm key is "1" (Yes, accept this change / Yes, allow creation).
+# A pasted question in another agent's transcript is not enough: the question
+# must be its own line, with option 1 and either "2. No, reject/deny" or the
+# "f full diff" footer, and it must still be the active dialog at the bottom.
+# A composer box under that text means it is scrollback, so it is ignored.
+screen_needs_file_yes() {
+  [ -n "${1:-}" ] || return 1
+  printf '%s\n' "$1" | tr -d '\r' | awk '
+    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; has_opt2 = 0; has_footer = 0; matched = 0; in_quote = 0; after_rule = 0 }
+    function arm() { if (has_cue && has_opt1 && (has_opt2 || has_footer)) matched = 1 }
+    index($0, rule) > 0 && $0 !~ /^[[:space:]]*(┃|│|\|)/ {
+      has_cue = 0; has_opt1 = 0; has_opt2 = 0; has_footer = 0; matched = 0; in_quote = 0
+      after_rule = 1
+      next
+    }
+    /^[[:space:]]*>[[:space:]]*$/ { next }
+    after_rule && /^[[:space:]]*>/ {
+      after_rule = 0
+      next
+    }
+    !/^[[:space:]]*$/ { after_rule = 0 }
+    /([Rr]unning command\.\.\.|[Rr]eading file\.\.\.|[Ee]diting file|[Tt]hinking\.\.\.|[Ll]oading\.\.\.|[Tt]hought for [0-9]|[0-9.]+k[[:space:]]+in[[:space:]]*\||Conversation compacted)/ {
+      has_cue = 0; has_opt1 = 0; has_opt2 = 0; has_footer = 0; matched = 0; in_quote = 0
+      next
+    }
+    !in_quote && /^[[:space:]]*(┃|│|\|)?[[:space:]]*(❯|>)[[:space:]]*1\.[[:space:]]+[Yy]es([[:space:],-]|$)/ {
+      has_opt1 = 1
+      arm()
+      next
+    }
+    !in_quote && /^[[:space:]]*(┃|│|\|)?[[:space:]]*2\.[[:space:]]+[Nn]o,[[:space:]]+([Rr]eject|[Dd]eny)([[:space:]]|$)/ {
+      has_opt2 = 1
+      arm()
+      next
+    }
+    !in_quote && /f full diff/ {
+      has_footer = 1
+      arm()
+      next
+    }
+    /^[[:space:]]*>/ {
+      in_quote = 1
+      has_cue = 0; has_opt1 = 0; has_opt2 = 0; has_footer = 0; matched = 0
+      next
+    }
+    in_quote {
+      if (/^[[:space:]]*$/ || (/^[[:space:]]+/ && $0 !~ /^[[:space:]]*(┃|│|\||●|○|✻)/)) next
+      in_quote = 0
+    }
+    !in_quote && /^[[:space:]]*(┃|│|\|)?[[:space:]]*([Aa]ccept this file edit\?|[Aa]llow creation of this file\?)[[:space:]]*$/ {
+      has_cue = 1
+      arm()
+      next
+    }
+    !matched && has_opt1 && !/^[[:space:]]*$/ {
+      has_opt1 = 0
+      has_opt2 = 0
+      has_footer = 0
+    }
+    END { exit (matched ? 0 : 1) }
+  '
+}
+
+# screen_needs_run_yes <screen_text>: true for a live "Run this command?" dialog.
+# Option 1 is confirmed with "1", not Enter. The question and the "> 1. Yes,
+# run command" line must start at column 0 (or a box border). Indented copies
+# in another agent's transcript, including a Grok user bubble, do not match.
+# A composer box under the dialog still counts: that is how agy renders it.
+screen_needs_run_yes() {
+  [ -n "${1:-}" ] || return 1
+  printf '%s\n' "$1" | tr -d '\r' | awk '
+    BEGIN { rule = "──────────"; has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0; after_rule = 0 }
+    index($0, rule) > 0 && $0 !~ /^[[:space:]]*(┃|│|\|)/ {
+      if (matched) exit 0
+      has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0
+      after_rule = 1
+      next
+    }
+    /^[[:space:]]*>[[:space:]]*$/ { next }
+    after_rule && /^[[:space:]]*>/ {
+      after_rule = 0
+      next
+    }
+    !/^[[:space:]]*$/ { after_rule = 0 }
+    /([Rr]unning command\.\.\.|[Rr]eading file\.\.\.|[Ee]diting file|[Tt]hinking\.\.\.|[Ll]oading\.\.\.|[Tt]hought for [0-9]|[0-9.]+k[[:space:]]+in[[:space:]]*\||Conversation compacted)/ {
+      has_cue = 0; has_opt1 = 0; matched = 0; in_quote = 0
+      next
+    }
+    !in_quote && /^(┃|│|\|)?(❯|>)[[:space:]]*1\.[[:space:]]+[Yy]es,[[:space:]]+run command([[:space:]]|$)/ {
+      has_opt1 = 1
+      if (has_cue) matched = 1
+      next
+    }
+    /^[[:space:]]*>/ {
+      in_quote = 1
+      has_cue = 0; has_opt1 = 0; matched = 0
+      next
+    }
+    in_quote {
+      if (/^[[:space:]]*$/ || (/^[[:space:]]+/ && $0 !~ /^[[:space:]]*(┃|│|\||●|○|✻)/)) next
+      in_quote = 0
+    }
+    !in_quote && /^(┃|│|\|)?[Rr]un this command\?[[:space:]]*$/ {
+      has_cue = 1
+      if (has_opt1) matched = 1
       next
     }
     !matched && has_opt1 && !/^[[:space:]]*$/ {
@@ -352,6 +470,14 @@ pane_action() {
           printf '0'
           return 0
         fi
+        if screen_needs_file_yes "$out"; then
+          printf '1'
+          return 0
+        fi
+        if screen_needs_run_yes "$out"; then
+          printf '1'
+          return 0
+        fi
         if screen_has_prompt "$out"; then
           printf 'approve'
           return 0
@@ -376,6 +502,14 @@ pane_action() {
   fi
   if screen_needs_survey_skip "$out"; then
     printf '0'
+    return 0
+  fi
+  if screen_needs_file_yes "$out"; then
+    printf '1'
+    return 0
+  fi
+  if screen_needs_run_yes "$out"; then
+    printf '1'
     return 0
   fi
   if screen_has_prompt "$out"; then
@@ -450,7 +584,7 @@ approve_pane() {
       cleared=1
       break
     fi
-    if [ "$action" = "ctrl+k" ] || [ "$action" = "0" ]; then
+    if [ "$action" = "ctrl+k" ] || [ "$action" = "0" ] || [ "$action" = "1" ]; then
       run_herdr agent send-keys "$pane" "$action" >/dev/null 2>&1 || break
       sent=$((sent + 1))
       last_action="$action"
@@ -485,7 +619,7 @@ approve_pane() {
     printf 1
   else
     remaining=$(pane_action "$pane" || true)
-    if [ "$remaining" = "approve" ] || [ "$remaining" = "ctrl+k" ] || [ "$remaining" = "0" ]; then
+    if [ "$remaining" = "approve" ] || [ "$remaining" = "ctrl+k" ] || [ "$remaining" = "0" ] || [ "$remaining" = "1" ]; then
       printf 0
     else
       printf 1

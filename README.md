@@ -208,11 +208,13 @@ own idle rule) — leaving a pane that is visibly waiting reported as
 
 The fallback matches the active visible screen (while ignoring scrollback
 history), supporting classic `esc to cancel` dialogs, `agy` permission prompts
-(`> 1. Yes, run command`, `> 1. Yes, allow access`, `> 1. Yes, accept this change`,
-sandbox bypass, outside-workspace access, file edit acceptance), `ctrl+k`
-subagent approval banners, and submitting `continue` on transient network or
-stream idle timeout error screens. Set `APPROVE_SCRAPE_FALLBACK=0` to trust
-herdr's status alone.
+(`> 1. Yes, run command`, `> 1. Yes, allow access`, sandbox bypass,
+outside-workspace access), `ctrl+k` subagent approval banners, and submitting
+`continue` on transient network or stream idle timeout error screens.
+Antigravity file dialogs (`Accept this file edit?` / `> 1. Yes, accept this change`,
+and `Allow creation of this file?`) and `Run this command?` / `> 1. Yes, run command`
+ignore Enter, so the plugin sends `1`.
+Set `APPROVE_SCRAPE_FALLBACK=0` to trust herdr's status alone.
 
 ## Hold the key to keep approving
 
