@@ -36,7 +36,8 @@ namespace HerdrApproveAllSetup
             bool skipHerdrUpdate = false;
             foreach (string arg in args)
             {
-                if (string.Equals(arg, "--skip-herdr-update", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(arg, "--skip-herdr-update", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(arg, "--silent", StringComparison.OrdinalIgnoreCase))
                 {
                     skipHerdrUpdate = true;
                 }
